@@ -12,6 +12,7 @@ import com.music.bitchord.data.innertube.potoken.PoTokenGenerator
 import com.music.bitchord.data.innertube.potoken.PoTokenWebView
 import com.music.bitchord.data.settings.AppSettings
 import com.music.bitchord.data.sources.SourceResolver
+import java.io.File
 
 /**
  * The phone's answers to what the shared stream resolution asks of its
@@ -58,7 +59,6 @@ object AndroidStreamHooks {
             available = { webViewSupported },
         )
         InnerTubeXResolver.init(
-            filesDir = app.filesDir,
             store = object : InnerTubeXResolver.ConfigStore {
                 override fun getString(key: String): String? = prefs.getString(key, null)
                 override fun getLong(key: String): Long? = if (prefs.contains(key)) prefs.getLong(key, 0L) else null
@@ -66,6 +66,7 @@ object AndroidStreamHooks {
                 override fun putLong(key: String, value: Long) = prefs.edit().putLong(key, value).apply()
             },
             poTokenProvider = poTokens.asTokenProvider(),
+            playerCache = FilePlayerCache(File(app.filesDir, "innertubex_players")),
         )
     }
 }

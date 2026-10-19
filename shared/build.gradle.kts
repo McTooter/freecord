@@ -56,6 +56,11 @@ kotlin {
             api("io.ktor:ktor-serialization-kotlinx-json:3.5.2")
             api("org.jetbrains.kotlinx:kotlinx-serialization-json:1.11.0")
             api("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.11.0")
+            // The IOException every platform agrees on (a typealias to
+            // java.io.IOException on the JVM, so the applications' catch sites
+            // are unchanged), and what ktor's own channels are built on —
+            // the version ktor 3.5.2 pins.
+            api("org.jetbrains.kotlinx:kotlinx-io-core:0.9.1")
             // YouTube stream resolution, as the phone does it: InnerTubeX's
             // client catalog and cipher tiers. Its own build publishes iOS
             // klibs, so the port inherits it for free.

@@ -18,23 +18,21 @@ import com.metrolist.innertubex.extraction.strategy.PoTokenProviderKind
 import com.metrolist.innertubex.extraction.YtConfigParserImpl
 import com.metrolist.innertubex.extraction.generateClientPlaybackNonce
 import com.metrolist.innertubex.models.YouTubeLocale
-import com.music.bitchord.data.Http
 import com.music.bitchord.data.TrackLog
-import io.ktor.client.HttpClient
-import io.ktor.client.engine.okhttp.OkHttp
+import com.music.bitchord.platform.AppConcurrentMap
+import com.music.bitchord.platform.AppIoDispatcher
+import com.music.bitchord.platform.platformHttpClient
 import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.serialization.kotlinx.json.json
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
-import java.io.File
-import java.util.concurrent.ConcurrentHashMap
+import kotlin.concurrent.Volatile
 
 /** YouTube stream extraction through InnerTubeX's live-benchmarked client catalog and cipher tiers. */
 object InnerTubeXResolver {
@@ -65,27 +63,46 @@ object InnerTubeXResolver {
         fun putLong(key: String, value: Long)
     }
 
+    /**
+     * Where the preprocessed EJS players are kept between processes — a
+     * directory the platform can read and write small files into. Solving a
+     * player from scratch is the 8.7s step, so what is stored here is worth
+     * the megabytes. The JVM's answer writes under the application's
+     * files dir (see FilePlayerCache).
+     */
+    interface PlayerCache {
+        /** The player stored under [key], or null when there is none. */
+        fun read(key: String): String?
+
+        /** Stores [value] under [key]; null deletes it. */
+        fun write(key: String, value: String?)
+    }
+
     /** Whether InnerTubeX's DEBUG lines reach the track log — the phone's debug builds. */
     @Volatile
     var debugLogging: Boolean = false
 
     private var prefs: ConfigStore? = null
     private var poTokens: TokenProvider? = null
-    private var playerDir: File? = null
+    private var players: PlayerCache? = null
     private var warmup: Job? = null
 
     /**
-     * @param filesDir where the preprocessed EJS players are kept.
+     * @param store where the remote player config is remembered between runs.
      * @param poTokenProvider the platform's BotGuard minter — the phone's
      *   WebView one. Null where there is none, which leaves the clients that
      *   need a PoToken out of the catalog.
+     * @param playerCache where preprocessed players persist. Null leaves the
+     *   cipher solving a player from scratch — the 8.7s step — on every
+     *   launch, which is correct for a platform without a directory to keep
+     *   them in and not what any shipping build wants.
      */
-    fun init(filesDir: File, store: ConfigStore, poTokenProvider: TokenProvider?) {
+    fun init(store: ConfigStore, poTokenProvider: TokenProvider?, playerCache: PlayerCache? = null) {
         prefs = store
         poTokens = poTokenProvider
-        playerDir = File(filesDir, "innertubex_players").apply { mkdirs() }
+        players = playerCache
         scope.launch {
-            cipherService.setPreprocessedPlayerCache(::readPlayer, ::writePlayer)
+            players?.let { cache -> cipherService.setPreprocessedPlayerCache(cache::read, cache::write) }
             warm(WARM_DELAY_MS)
         }
     }
@@ -112,29 +129,6 @@ object InnerTubeXResolver {
         }
     }
 
-    /**
-     * EJS preprocessed players, kept across processes. Solving a player from
-     * scratch is the 8.7s step; a preprocessed one is reused per player version,
-     * so only the first launch after YouTube rotates its player pays it.
-     */
-    private fun readPlayer(key: String): String? =
-        playerDir?.let { File(it, key) }?.takeIf { it.isFile }?.readText()
-
-    private fun writePlayer(key: String, value: String?) {
-        val dir = playerDir ?: return
-        val file = File(dir, key)
-        if (value == null) {
-            file.delete()
-            return
-        }
-        val tmp = File(dir, "$key.tmp")
-        tmp.writeText(value)
-        tmp.renameTo(file)
-        // Players rotate every few days; only the newest are worth their megabytes.
-        dir.listFiles()?.filter { !it.name.endsWith(".tmp") }?.sortedByDescending { it.lastModified() }
-            ?.drop(KEPT_PLAYERS)?.forEach { it.delete() }
-    }
-
     /** The installed PoToken provider, or one that can mint nothing when there is not one. */
     private val tokenProvider = object : TokenProvider {
         override val capabilities: TokenProviderCapabilities
@@ -148,8 +142,7 @@ object InnerTubeXResolver {
         }
     }
 
-    private val http = HttpClient(OkHttp) {
-        engine { preconfigured = Http.client }
+    private val http = platformHttpClient {
         install(ContentNegotiation) {
             json(Json { ignoreUnknownKeys = true; explicitNulls = false; encodeDefaults = true })
         }
@@ -197,13 +190,13 @@ object InnerTubeXResolver {
         logger = logger,
     )
 
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val scope = CoroutineScope(SupervisorJob() + AppIoDispatcher)
 
     /** What each minted URL was, so its fetch can be dressed and its refusal attributed. */
-    private val minted = ConcurrentHashMap<String, Extracted>()
+    private val minted = AppConcurrentMap<String, Extracted>()
 
     /** Clients refused a track mid-playback, by videoId, and until when. */
-    private val excluded = ConcurrentHashMap<String, ConcurrentHashMap<String, Long>>()
+    private val excluded = AppConcurrentMap<String, AppConcurrentMap<String, Long>>()
 
     /**
      * InnerTubeX picks one format per ask and has no bitrate ceiling of its own:
@@ -270,7 +263,7 @@ object InnerTubeXResolver {
 
     fun exclude(videoId: String, profileId: String) {
         TrackLog.w(TAG, "InnerTubeX: $profileId refused $videoId; skipping it for this track", about = videoId)
-        excluded.getOrPut(videoId) { ConcurrentHashMap() }[profileId] = MonotonicClock.nowMs() + EXCLUDE_MS
+        excluded.getOrPut(videoId) { AppConcurrentMap() }[profileId] = MonotonicClock.nowMs() + EXCLUDE_MS
     }
 
     fun onSessionChanged() {
@@ -283,8 +276,10 @@ object InnerTubeXResolver {
     private fun excludedFor(videoId: String): Set<String> {
         val entries = excluded[videoId] ?: return emptySet()
         val now = MonotonicClock.nowMs()
-        entries.entries.removeAll { it.value <= now }
-        return entries.keys.toSet()
+        // Over a snapshot, as ConcurrentHashMap's view was: prune the expired
+        // entries, then read what remains.
+        entries.entries().filter { it.second <= now }.forEach { entries.remove(it.first) }
+        return entries.keys()
     }
 
     private const val PLAYER_CONFIG_URL =
@@ -294,5 +289,4 @@ object InnerTubeXResolver {
     private const val MAX_REMEMBERED = 64
     /** Off the cold-start path; the first tap on a track is rarely sooner. */
     private const val WARM_DELAY_MS = 2_000L
-    private const val KEPT_PLAYERS = 3
 }

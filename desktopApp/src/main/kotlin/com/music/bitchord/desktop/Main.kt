@@ -4,6 +4,7 @@ import androidx.compose.runtime.CompositionLocalProvider
 import com.music.bitchord.ui.player.PlayerPlatform
 import com.music.bitchord.data.DebugLog
 import com.music.bitchord.data.TrackLog
+import com.music.bitchord.data.innertube.FilePlayerCache
 import com.music.bitchord.data.innertube.InnerTubeXResolver
 import com.music.bitchord.data.innertube.StreamResolver
 import com.music.bitchord.data.innertube.potoken.PoTokenGenerator
@@ -23,6 +24,7 @@ import bitchord.desktopapp.generated.resources.logo
 import java.awt.Dimension
 import java.awt.Rectangle
 import java.awt.Toolkit
+import java.io.File
 import kotlin.math.roundToInt
 import org.jetbrains.compose.resources.painterResource
 
@@ -54,12 +56,12 @@ fun main() {
         DesktopStreamClient.ceiling.get() ?: DesktopSourceRegistry.ceiling(null).maxKbps
     }
     InnerTubeXResolver.init(
-        filesDir = DesktopMediaCache.directory.toFile(),
         store = DesktopInnerTubeXStore,
         poTokenProvider = PoTokenGenerator(
             createMinter = { DesktopPoTokenWebView.getNewPoTokenGenerator() },
             available = { DesktopPoTokenWebView.available },
         ).asTokenProvider(),
+        playerCache = FilePlayerCache(File(DesktopMediaCache.directory.toFile(), "innertubex_players")),
     )
     // The public "apps open right now" count; see Presence.
     DesktopPresence.install()

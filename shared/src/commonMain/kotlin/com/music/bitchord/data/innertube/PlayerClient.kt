@@ -1,9 +1,17 @@
 package com.music.bitchord.data.innertube
 
-import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
-import org.schabi.newpipe.extractor.NewPipe
-import org.schabi.newpipe.extractor.services.youtube.YoutubeParsingHelper
-import java.util.Locale
+import io.ktor.http.Url
+import io.ktor.http.URLProtocol
+
+/**
+ * Parses [this] as an http(s) URL, or null when it is not one — the answer
+ * `okhttp3.toHttpUrlOrNull` gave this code on the JVM, which every URL check
+ * in this package asks for before reading a query parameter or a host off it.
+ */
+internal fun String.toHttpOrNull(): Url? =
+    runCatching { Url(this) }
+        .getOrNull()
+        ?.takeIf { it.protocol == URLProtocol.HTTP || it.protocol == URLProtocol.HTTPS }
 
 /**
  * The identity a googlevideo URL says minted it, as far as its media fetch
@@ -118,9 +126,9 @@ data class PlayerClient(
          * iPhone asked for.
          */
         fun forStreamUrl(url: String): PlayerClient {
-            val parsed = url.toHttpUrlOrNull() ?: return IOS
-            val name = parsed.queryParameter("c")?.uppercase(Locale.ROOT) ?: return IOS
-            val version = parsed.queryParameter("cver")
+            val parsed = url.toHttpOrNull() ?: return IOS
+            val name = parsed.parameters["c"]?.uppercase() ?: return IOS
+            val version = parsed.parameters["cver"]
             return when {
                 name.startsWith("IOS") ->
                     if (version == IOS_RECENT.clientVersion) IOS_RECENT else IOS
@@ -136,18 +144,28 @@ data class PlayerClient(
             }
         }
 
-        /** NewPipe's extraction mints with this; its agent is read from NewPipe so the two can't drift. */
+        /**
+         * NewPipe's extraction mints with this; its agent has to match.
+         *
+         * NewPipe builds it from the localization it was initialised with, and
+         * nothing ever overrides that — this app calls the one-argument
+         * `NewPipe.init`, which installs `Localization.DEFAULT` (en, GB), so
+         * the country slot always reads `GB`. Spelled out as the constant it
+         * always evaluates to because this file now runs where NewPipe does
+         * not exist to ask.
+         */
         private fun visionOs(version: String?) = PlayerClient(
             clientName = "VISIONOS",
             clientVersion = version ?: "1.02",
-            userAgent = YoutubeParsingHelper.getVisionOsUserAgent(NewPipe.getPreferredLocalization()),
+            userAgent = "com.google.visionos.youtube/1.02(RealityDevice14,1; U; " +
+                "CPU visionOS 25_6_0 like Mac OS X; GB)",
         )
 
         /** Largest single range googlevideo reliably serves for [url]'s client; mirrors InnerTubeX's `mediaRangeChunkSize`. */
         fun rangeBytesFor(url: String): Long {
-            val parsed = url.toHttpUrlOrNull() ?: return Long.MAX_VALUE
+            val parsed = url.toHttpOrNull() ?: return Long.MAX_VALUE
             if (!parsed.host.endsWith("googlevideo.com")) return Long.MAX_VALUE
-            val name = parsed.queryParameter("c")?.uppercase(Locale.ROOT)
+            val name = parsed.parameters["c"]?.uppercase()
             return if (name == "ANDROID_VR" || name?.startsWith("TVHTML5_SIMPLY") == true) {
                 NARROW_RANGE_BYTES
             } else {

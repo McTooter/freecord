@@ -93,6 +93,16 @@ class AppConcurrentMap<K, V> {
 
     fun remove(key: K): V? = lock.withLock { map.remove(key) }
 
+    /** Removes [key] only while it still maps to [value], as `ConcurrentHashMap.remove(key, value)` did. */
+    fun remove(key: K, value: V): Boolean = lock.withLock {
+        if (map[key] == value) {
+            map.remove(key)
+            true
+        } else {
+            false
+        }
+    }
+
     fun containsKey(key: K): Boolean = lock.withLock { map.containsKey(key) }
 
     fun clear() = lock.withLock { map.clear() }
