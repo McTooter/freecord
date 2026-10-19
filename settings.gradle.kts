@@ -20,6 +20,10 @@ include(":shared")
 include(":sharedUi")
 include(":desktopUi")
 include(":desktopApp")
+// The iOS app shell: the Kotlin half of what iosApp's Xcode project embeds.
+// Included unconditionally — its klibs compile on any host (that is how the
+// iOS targets are verified on Windows); only linking the framework needs a Mac.
+include(":ios")
 
 // The Android module only when there is an SDK to build it against. A machine
 // set up for the desktop alone has none, and including it there fails at
