@@ -50,6 +50,12 @@ kotlin {
         }
     }
 
+    // The player and every screen are drawn from the same Compose Multiplatform
+    // code on iOS; the iOS app supplies the platform answers (PlayerHost) the
+    // way the desktop does.
+    iosArm64()
+    iosSimulatorArm64()
+
     applyDefaultHierarchyTemplate()
 
     compilerOptions {
