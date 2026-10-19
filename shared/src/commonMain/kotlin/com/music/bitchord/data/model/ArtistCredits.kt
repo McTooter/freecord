@@ -1,8 +1,8 @@
 package com.music.bitchord.data.model
 
-import java.text.Normalizer
-import java.util.Locale
-import java.util.concurrent.ConcurrentHashMap
+import com.music.bitchord.platform.AppLock
+import com.music.bitchord.platform.normalizeNfd
+import com.music.bitchord.platform.withLock
 
 /**
  * Folds a name to the form two spellings of one artist have in common.
@@ -22,14 +22,21 @@ import java.util.concurrent.ConcurrentHashMap
  * and the case it writes them in, are let go.
  */
 fun normalizedArtistName(raw: String): String =
-    Normalizer.normalize(raw, Normalizer.Form.NFD)
+    normalizeNfd(raw)
         .replace(COMBINING_MARKS, "")
-        .lowercase(Locale.ROOT)
+        .lowercase()
         .replace(REPEATED_SPACE, " ")
         .trim()
 
-/** The marks a locale puts on its letters, which do not change who wrote them. */
-private val COMBINING_MARKS = Regex("\\p{InCombiningDiacriticalMarks}+")
+/**
+ * The marks a locale puts on its letters, which do not change who wrote them.
+ *
+ * The Combining Diacritical Marks block, written by its range rather than by
+ * name: `\p{In...}` block names are a Java-ism no other platform's regex
+ * engine promises, while `\x{...}` ranges are accepted by all of them and
+ * the block's bounds are fixed by Unicode.
+ */
+private val COMBINING_MARKS = Regex("[\\x{0300}-\\x{036F}]+")
 
 private val REPEATED_SPACE = Regex("\\s+")
 
@@ -160,18 +167,24 @@ private fun String.startsWithIgnoringCase(prefix: String, at: Int): Boolean =
  * decides instead, which can ask them.
  */
 object ArtistNameIndex {
-    private val channels = ConcurrentHashMap<String, MutableSet<String>>()
-    private val joiners = ConcurrentHashMap.newKeySet<String>()
-    private val joinerTexts = ConcurrentHashMap.newKeySet<String>()
-    private val joinerSightings = ConcurrentHashMap<String, Int>()
+    // One lock for the lot: the operations are lookups and small inserts, and
+    // the sets need guarding as much as the maps do - the JVM's concurrent
+    // sets tolerated an iteration racing an add, and a plain set cannot.
+    private val lock = AppLock()
+    private val channels = LinkedHashMap<String, MutableSet<String>>()
+    private val joiners = LinkedHashSet<String>()
+    private val joinerTexts = LinkedHashSet<String>()
+    private val joinerSightings = LinkedHashMap<String, Int>()
 
     /** Notes an artist YouTube linked, under the name it wrote. */
     fun record(refs: List<ArtistRef>) {
-        refs.forEach { ref ->
-            val name = normalizedArtistName(ref.name)
-            val id = ref.browseId
-            if (name.isEmpty() || id.isNullOrBlank()) return@forEach
-            channels.computeIfAbsent(name) { ConcurrentHashMap.newKeySet() }.add(id)
+        lock.withLock {
+            refs.forEach { ref ->
+                val name = normalizedArtistName(ref.name)
+                val id = ref.browseId
+                if (name.isEmpty() || id.isNullOrBlank()) return@forEach
+                channels.getOrPut(name) { LinkedHashSet() }.add(id)
+            }
         }
     }
 
@@ -208,11 +221,17 @@ object ArtistNameIndex {
                 // More than one word is a phrase, not a joiner: `and Mata`
                 // has a name in it and must never be learned as punctuation.
                 if (key.any { it.isWhitespace() } || key.any { it.isDigit() }) continue
-                val seen = joinerSightings.merge(key, 1, Int::plus) ?: 1
+                val seen = lock.withLock {
+                    val next = (joinerSightings[key] ?: 0) + 1
+                    joinerSightings[key] = next
+                    next
+                }
                 if (seen < JOINER_WORD_SIGHTINGS) continue
             }
-            joiners.add(key)
-            joinerTexts.add(segment.text.trim())
+            lock.withLock {
+                joiners.add(key)
+                joinerTexts.add(segment.text.trim())
+            }
         }
     }
 
@@ -220,13 +239,13 @@ object ArtistNameIndex {
      * The channel YouTube stated for [name], or null when it has never stated
      * one or has stated more than one.
      */
-    fun lookup(name: String): String? {
-        val ids = channels[normalizedArtistName(name)] ?: return null
-        return ids.singleOrNull()
+    fun lookup(name: String): String? = lock.withLock {
+        val ids = channels[normalizedArtistName(name)] ?: return@withLock null
+        ids.singleOrNull()
     }
 
     /** Whether [text] has been seen joining two credited names. */
-    fun isJoiner(text: String): Boolean = normalizedArtistName(text) in joiners
+    fun isJoiner(text: String): Boolean = lock.withLock { normalizedArtistName(text) in joiners }
 
     /**
      * The joiners as they were written, for cutting a line up on them.
@@ -234,7 +253,11 @@ object ArtistNameIndex {
      * [joiners] is keyed by the folded form, which has lost the punctuation, so
      * it cannot be used to split a line - the word has to be cut on as written.
      */
-    fun joinerTexts(): Set<String> = joinerTexts
+    fun joinerTexts(): Set<String> = lock.withLock {
+        // A copy: the caller cuts lines up on it, and a plain set cannot be
+        // iterated while another thread adds to it.
+        joinerTexts.toSet()
+    }
 
     /**
      * Forgets everything learned.
@@ -244,10 +267,12 @@ object ArtistNameIndex {
      * is, which does not change with the account signed in.
      */
     fun forget() {
-        channels.clear()
-        joiners.clear()
-        joinerTexts.clear()
-        joinerSightings.clear()
+        lock.withLock {
+            channels.clear()
+            joiners.clear()
+            joinerTexts.clear()
+            joinerSightings.clear()
+        }
     }
 }
 

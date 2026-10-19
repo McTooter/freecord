@@ -9,3 +9,14 @@ package com.music.bitchord.platform
  * changes the time zone.
  */
 expect fun platformMonotonicNanos(): Long
+
+/**
+ * Wall-clock milliseconds since the epoch, as `System.currentTimeMillis`
+ * answers.
+ *
+ * Only for things that genuinely want the wall clock: signing Innertube
+ * requests with a timestamp Google will accept, and stamping track-log lines
+ * with the time of day a listener recognises. Every measured *duration* goes
+ * through [platformMonotonicNanos] instead.
+ */
+expect fun platformWallClockMillis(): Long

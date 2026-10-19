@@ -2,9 +2,7 @@ package com.music.bitchord.data.innertube
 
 import com.music.bitchord.auth.normalizeDataSyncId
 import com.music.bitchord.data.DebugLog as Log
-import io.ktor.client.HttpClient
 import io.ktor.client.call.body
-import io.ktor.client.engine.okhttp.OkHttp
 import io.ktor.client.plugins.HttpRequestTimeoutException
 import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.plugins.timeout
@@ -41,10 +39,14 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.json.putJsonObject
-import java.io.IOException
-import java.security.MessageDigest
-import java.util.Base64
-import java.util.Locale
+import com.music.bitchord.platform.isIoFailure
+import com.music.bitchord.platform.platformHttpClient
+import com.music.bitchord.platform.platformSystemLanguageTag
+import com.music.bitchord.platform.platformWallClockMillis
+import com.music.bitchord.platform.sha1
+import com.music.bitchord.platform.toHexLower
+import kotlin.concurrent.Volatile
+import kotlin.io.encoding.Base64
 
 /**
  * Minimal Innertube (youtubei) client.
@@ -68,7 +70,7 @@ object Innertube {
     val currentLocaleTag: String
         get() {
             val raw = appLanguage()?.ifEmpty { null }
-                ?: Locale.getDefault().toLanguageTag().ifEmpty { "en" }
+                ?: platformSystemLanguageTag()
             return com.music.bitchord.data.LocaleTags.normalizeAppTag(raw)
         }
 
@@ -461,9 +463,11 @@ object Innertube {
 
     private val json = Json { ignoreUnknownKeys = true }
 
-    private val client = HttpClient(OkHttp) {
-        // Same OkHttp instance ExoPlayer streams through — see Http.
-        engine { preconfigured = com.music.bitchord.data.Http.client }
+    private val client = platformHttpClient {
+        // The engine comes from the platform factory - and on the JVM that is
+        // the very OkHttp instance ExoPlayer streams through, so a minted
+        // stream URL and the fetch that uses it share one connection context;
+        // see Http.
         install(ContentNegotiation) { json(json) }
         // Without this the only bound is OkHttp's own read timeout, and the
         // failure it raises reads as "Socket timeout has expired […]
@@ -511,7 +515,12 @@ object Innertube {
                 // the caller move to the next one.
                 Log.d(TAG, "not retrying, request timed out: ${e.message}")
                 throw e
-            } catch (e: IOException) {
+            } catch (e: Exception) {
+                // isIoFailure answers here what `catch (e: IOException)`
+                // answered on the JVM - connection trouble, not a bad
+                // response - on whichever engine the platform runs. It is
+                // false for cancellation, which therefore still propagates.
+                if (!isIoFailure(e)) throw e
                 Log.d(TAG, "retrying: ${e.message}")
             }
             delay(backoff)
@@ -605,8 +614,9 @@ object Innertube {
     /** Timed caption transcript used as a last-resort lyrics source. */
     suspend fun transcript(videoId: String): JsonObject = postMusic("get_transcript") {
         // get_transcript expects a tiny protobuf: field 1, length, video id.
-        val bytes = byteArrayOf(10, videoId.toByteArray().size.toByte()) + videoId.toByteArray()
-        put("params", Base64.getEncoder().encodeToString(bytes))
+        val idBytes = videoId.encodeToByteArray()
+        val bytes = byteArrayOf(10, idBytes.size.toByte()) + idBytes
+        put("params", Base64.encode(bytes))
     }
 
     suspend fun search(query: String, params: String? = null, anonymous: Boolean = true): JsonObject =
@@ -1256,10 +1266,8 @@ object Innertube {
         listOf("SAPISID", "__Secure-3PAPISID", "__Secure-1PAPISID")
 
     private fun sapisidHash(sapisid: String, origin: String = MUSIC_ORIGIN): String {
-        val timestamp = System.currentTimeMillis() / 1000
-        val digest = MessageDigest.getInstance("SHA-1")
-            .digest("$timestamp $sapisid $origin".toByteArray())
-            .joinToString("") { "%02x".format(Locale.ROOT, it) }
+        val timestamp = platformWallClockMillis() / 1000
+        val digest = sha1("$timestamp $sapisid $origin".encodeToByteArray()).toHexLower()
         return "SAPISIDHASH ${timestamp}_$digest"
     }
 }

@@ -13,3 +13,16 @@ import io.ktor.client.HttpClientConfig
  * never reaches common code.
  */
 internal expect fun platformHttpClient(block: HttpClientConfig<*>.() -> Unit): HttpClient
+
+/**
+ * Whether this failure means the call could not be *made*, rather than was
+ * made and answered badly - the question the Innertube retry loop asks
+ * before attempting a request again.
+ *
+ * The JVM answer is `IOException`, exactly the predicate that loop caught
+ * before this existed, so its retry behaviour there is unchanged. iOS has no
+ * `IOException`: every URLSession failure arrives as the engine's own
+ * exception wrapping an `NSError`, and that class is the same breadth of
+ * answer - connection trouble of any kind - that `IOException` gave the JVM.
+ */
+internal expect fun isIoFailure(error: Throwable): Boolean

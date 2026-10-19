@@ -3,12 +3,15 @@ package com.music.bitchord.platform
 import io.ktor.client.HttpClient
 import io.ktor.client.HttpClientConfig
 import io.ktor.client.engine.darwin.Darwin
+import io.ktor.client.engine.darwin.DarwinHttpRequestException
 import kotlinx.coroutines.Dispatchers
+import platform.Foundation.NSDate
 import platform.Foundation.NSLocale
 import platform.Foundation.NSLocaleLanguageCode
 import platform.Foundation.componentsFromLocaleIdentifier
 import platform.Foundation.currentLocale
 import platform.Foundation.preferredLanguages
+import platform.Foundation.timeIntervalSince1970
 import kotlin.time.TimeSource
 
 private val monotonicOrigin = TimeSource.Monotonic.markNow()
@@ -60,3 +63,11 @@ actual fun normalizeNfd(text: String): String = foldDiacritics(text)
 actual fun normalizeNfkc(text: String): String = foldCompatibility(text)
 
 actual fun platformMonotonicNanos(): Long = monotonicOrigin.elapsedNow().inWholeNanoseconds
+
+actual fun platformWallClockMillis(): Long = (NSDate().timeIntervalSince1970 * 1000.0).toLong()
+
+/**
+ * URLSession's own failures, wrapped by the ktor Darwin engine - the breadth
+ * of answer `IOException` gave the retry loops on the JVM.
+ */
+internal actual fun isIoFailure(error: Throwable): Boolean = error is DarwinHttpRequestException
