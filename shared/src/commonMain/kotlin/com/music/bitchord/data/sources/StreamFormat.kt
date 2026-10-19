@@ -1,6 +1,5 @@
 package com.music.bitchord.data.sources
 
-import java.util.Locale
 
 /**
  * What a source is about to hand the decoder, as far as the source will say.
@@ -39,9 +38,9 @@ data class StreamFormat(
     /** "24-bit · 192 kHz", "FLAC", "320 kbps" — whichever parts are known. */
     val summary: String
         get() = if (isDolbyAtmos) "Dolby Atmos" else listOfNotNull(
-            codec?.uppercase(Locale.ROOT),
+            codec?.uppercase(),
             bitDepth?.let { "$it-bit" },
-            sampleRateHz?.let { "${"%.1f".format(Locale.ROOT, it / 1000f).removeSuffix(".0")} kHz" },
+            sampleRateHz?.let { "${kilohertzLabel(it)} kHz" },
             kbps?.takeIf { isLossless != true }?.let { "$it kbps" },
         ).joinToString(" · ").ifEmpty { "Unknown format" }
 
@@ -49,4 +48,20 @@ data class StreamFormat(
         val LOSSLESS_CODECS = setOf("flac", "alac", "wav", "aiff", "ape", "wv", "dsf", "dff")
         val DOLBY_ATMOS_CODECS = setOf("eac3-joc", "ec3-joc", "dolby-atmos")
     }
+}
+
+/**
+ * [hz] in kilohertz to one decimal place, dropping the place where it is
+ * whole - `44100 -> "44.1"`, `8000 -> "8"`.
+ *
+ * What `"%.1f".format(Locale.ROOT, it / 1000f).removeSuffix(".0")` answered,
+ * worked out in integer arithmetic: sample rates are whole hundreds of hertz,
+ * so the rounding a locale-aware formatter would have done is exactly
+ * `+50 / 100`, and no platform needs a formatter that reads the same.
+ */
+private fun kilohertzLabel(hz: Int): String {
+    val tenths = (hz + 50L) / 100
+    val whole = tenths / 10
+    val tenth = tenths % 10
+    return if (tenth == 0L) "$whole" else "$whole.$tenth"
 }

@@ -6,12 +6,16 @@ import io.ktor.client.engine.darwin.Darwin
 import io.ktor.client.engine.darwin.DarwinHttpRequestException
 import kotlinx.coroutines.Dispatchers
 import platform.Foundation.NSDate
+import platform.Foundation.NSDateFormatter
 import platform.Foundation.NSLocale
 import platform.Foundation.NSLocaleLanguageCode
 import platform.Foundation.componentsFromLocaleIdentifier
 import platform.Foundation.currentLocale
 import platform.Foundation.preferredLanguages
 import platform.Foundation.timeIntervalSince1970
+import kotlin.coroutines.CoroutineContext
+import kotlin.coroutines.EmptyCoroutineContext
+import kotlin.native.concurrent.ThreadLocal
 import kotlin.time.TimeSource
 
 private val monotonicOrigin = TimeSource.Monotonic.markNow()
@@ -71,3 +75,46 @@ actual fun platformWallClockMillis(): Long = (NSDate().timeIntervalSince1970 * 1
  * of answer `IOException` gave the retry loops on the JVM.
  */
 internal actual fun isIoFailure(error: Throwable): Boolean = error is DarwinHttpRequestException
+
+actual fun platformLogStamp(millis: Long): String {
+    val formatter = NSDateFormatter()
+    // en_US_POSIX: the Gregorian calendar, ASCII digits and a 24-hour clock,
+    // in the device's time zone - the same stamp Locale.US gave the JVM.
+    formatter.locale = NSLocale(localeIdentifier = "en_US_POSIX")
+    formatter.dateFormat = "HH:mm:ss.SSS"
+    // NSDate's only time-based initializer counts from its reference date
+    // (1 January 2001 UTC), 978307200 seconds after the Unix epoch.
+    val sinceReferenceDate = millis / 1000.0 - 978_307_200.0
+    return formatter.stringFromDate(NSDate(timeIntervalSinceReferenceDate = sinceReferenceDate))
+}
+
+/**
+ * Native has no per-instance thread local; `@ThreadLocal` gives one value per
+ * *declaration*. A per-thread map keyed by the instance stands in, so the
+ * common class keeps its `ThreadLocal` semantics.
+ */
+@ThreadLocal
+private val threadSlots = HashMap<AppThreadLocal<*>, Any?>()
+
+internal actual class AppThreadLocal<T : Any?> actual constructor(private val initial: T) {
+    actual fun get(): T {
+        val slots = threadSlots
+        return if (this in slots) {
+            @Suppress("UNCHECKED_CAST")
+            slots[this] as T
+        } else {
+            initial
+        }
+    }
+
+    actual fun set(value: T) {
+        threadSlots[this] = value
+    }
+}
+
+/**
+ * No thread-context propagation exists on Native - see the expect. The slot
+ * is never set from this element; TrackLog lines there are filed without a
+ * track and every export falls back to its time window instead.
+ */
+internal actual fun <T> AppThreadLocal<T>.asContextElement(value: T): CoroutineContext = EmptyCoroutineContext

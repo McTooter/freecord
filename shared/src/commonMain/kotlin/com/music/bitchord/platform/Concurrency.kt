@@ -1,6 +1,7 @@
 package com.music.bitchord.platform
 
 import kotlinx.coroutines.CoroutineDispatcher
+import kotlin.coroutines.CoroutineContext
 
 /**
  * Mutual exclusion for code every platform runs.
@@ -124,3 +125,34 @@ private class PutReturnedNull : IllegalStateException("map.put returned null; us
  * blocking work on that side.
  */
 internal expect val AppIoDispatcher: CoroutineDispatcher
+
+/**
+ * A value carried with whichever thread a coroutine happens to be on.
+ *
+ * The JVM answer is `ThreadLocal`, which is what the sources this port reads
+ * had. iOS has no per-instance thread-local to ask for: `@ThreadLocal` gives
+ * a per-thread value per *declaration*, not per object, so the Native actual
+ * keys a per-thread map by the instance instead - same behaviour, one map per
+ * thread. Used for exactly one thing so far: the track log's current-track
+ * id.
+ */
+internal expect class AppThreadLocal<T : Any?>(initial: T) {
+    fun get(): T
+    fun set(value: T)
+}
+
+/**
+ * Publishes [value] to [this] for the duration of a coroutine - the shape
+ * `ThreadLocal.asContextElement` gave this code on the JVM.
+ *
+ * The JVM actual is a real `ThreadContextElement`: the value is set on
+ * whatever thread resumes the coroutine and restored when the step leaves, so
+ * plain calls down the stack see the right track whichever thread carried
+ * them, and child coroutines inherit it. Native has no such hook:
+ * `ThreadContextElement` is a JVM notion and kotlinx.coroutines ships it for
+ * the JVM only, so the iOS actual answers `EmptyCoroutineContext` - the
+ * element rides along harmlessly, the slot is never set from it, and TrackLog
+ * lines there are filed without a track, each track's export falling back to
+ * its own time window instead.
+ */
+internal expect fun <T> AppThreadLocal<T>.asContextElement(value: T): CoroutineContext

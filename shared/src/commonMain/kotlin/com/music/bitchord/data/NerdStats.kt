@@ -2,9 +2,9 @@ package com.music.bitchord.data
 
 import com.music.bitchord.data.sources.SourceTrackKeys
 import com.music.bitchord.data.sources.StreamFormat
+import com.music.bitchord.platform.AppConcurrentMap
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.update
-import java.util.concurrent.ConcurrentHashMap
 
 /**
  * Architectural provenance of audio pipeline telemetry statistics.
@@ -182,8 +182,26 @@ object NerdStats {
      * multiples of 44.1 kHz and rounding them makes them unrecognisable.
      */
     fun megahertzLabel(hz: Int): String? =
-        if (hz < 1_000_000) null
-        else java.math.BigDecimal(hz).movePointLeft(6).stripTrailingZeros().toPlainString() + " MHz"
+        if (hz < 1_000_000) null else megahertzDigits(hz) + " MHz"
+
+    /**
+     * [hz] as an exact decimal of megahertz, trailing zeros gone:
+     * `2822400 -> "2.8224"`, `5644800 -> "5.6448"`.
+     *
+     * The digits are worked out in integer arithmetic rather than through a
+     * decimal type no non-JVM platform has: a rate below 2^31 divided out by
+     * six places never rounds, so the exact digits are the quotient and the
+     * zero-padded remainder with its own trailing zeros trimmed - which is
+     * what `BigDecimal.movePointLeft(6).stripTrailingZeros().toPlainString`
+     * answered, whole-megahertz rates printing without a decimal point and
+     * all.
+     */
+    private fun megahertzDigits(hz: Int): String {
+        val whole = hz / 1_000_000
+        val fraction = hz % 1_000_000
+        if (fraction == 0) return whole.toString()
+        return "$whole." + fraction.toString().padStart(6, '0').trimEnd('0')
+    }
 
     fun isDolbyAtmosMime(mimeType: String?): Boolean =
         mimeType != null && (mimeType.endsWith("eac3-joc") || mimeType.endsWith("eac3"))
@@ -261,13 +279,13 @@ object NerdStats {
      * resolves the *next* track through the same code, so one loose value would
      * end up describing the wrong song.
      */
-    private val picked = ConcurrentHashMap<String, Int>()
+    private val picked = AppConcurrentMap<String, Int>()
 
     /** As [picked], for the richer format a non-YouTube source can state. */
-    private val declared = ConcurrentHashMap<String, StreamFormat>()
+    private val declared = AppConcurrentMap<String, StreamFormat>()
 
     /** Authoritative source name that supplied the stream, keyed by media/track id. */
-    private val sources = ConcurrentHashMap<String, String>()
+    private val sources = AppConcurrentMap<String, String>()
 
     fun onStreamPicked(videoId: String, kbps: Int, source: String? = null) {
         if (kbps > 0) {

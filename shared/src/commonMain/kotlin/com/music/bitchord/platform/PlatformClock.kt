@@ -20,3 +20,12 @@ expect fun platformMonotonicNanos(): Long
  * through [platformMonotonicNanos] instead.
  */
 expect fun platformWallClockMillis(): Long
+
+/**
+ * Wall-clock milliseconds as `HH:mm:ss.SSS` in the device's local time, ASCII
+ * digits - what `SimpleDateFormat("HH:mm:ss.SSS", Locale.US)` wrote into
+ * exported track logs. Fixed to that shape on every platform: a locale that
+ * writes its own digits or runs a 12-hour clock must not change what a pasted
+ * log looks like.
+ */
+expect fun platformLogStamp(millis: Long): String

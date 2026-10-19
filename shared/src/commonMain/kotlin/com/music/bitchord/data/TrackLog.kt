@@ -1,13 +1,16 @@
 package com.music.bitchord.data
 
 import com.music.bitchord.data.model.Song
+import com.music.bitchord.platform.AppConcurrentMap
+import com.music.bitchord.platform.AppLock
+import com.music.bitchord.platform.AppThreadLocal
+import com.music.bitchord.platform.asContextElement
+import com.music.bitchord.platform.platformLogStamp
+import com.music.bitchord.platform.platformWallClockMillis
+import com.music.bitchord.platform.withLock
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.asContextElement
 import kotlinx.coroutines.withContext
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
-import java.util.concurrent.ConcurrentHashMap
+import kotlin.concurrent.Volatile
 import kotlin.coroutines.CoroutineContext
 
 /**
@@ -111,7 +114,7 @@ object TrackLog {
     // ── Whose line is it ────────────────────────────────────────────────────
 
     /** The track whose work this thread is doing, if it is doing any. */
-    private val working = ThreadLocal<String?>()
+    private val working = AppThreadLocal<String?>(null)
 
     /**
      * A coroutine context that files everything logged inside it against [id].
@@ -136,6 +139,8 @@ object TrackLog {
 
     private val lines = ArrayDeque<Line>()
 
+    private val linesLock = AppLock()
+
     /** Total characters held, so the buffer is bounded by size rather than by count. */
     private var held = 0
 
@@ -151,8 +156,8 @@ object TrackLog {
         } else {
             message
         }
-        synchronized(lines) {
-            lines.addLast(Line(System.currentTimeMillis(), level, text, about))
+        linesLock.withLock {
+            lines.addLast(Line(platformWallClockMillis(), level, text, about))
             held += text.length
             while (held > MAX_HELD_CHARS && lines.isNotEmpty()) {
                 held -= lines.removeFirst().text.length
@@ -169,11 +174,11 @@ object TrackLog {
      * which track they are about: a track served whole from the disk cache is
      * resolved by nobody and would otherwise have no start at all.
      */
-    private val startedAt = ConcurrentHashMap<String, Long>()
+    private val startedAt = AppConcurrentMap<String, Long>()
 
     fun onTrackStarted(videoId: String) {
         if (startedAt.size >= MAX_REMEMBERED) startedAt.clear()
-        startedAt[videoId] = System.currentTimeMillis()
+        startedAt[videoId] = platformWallClockMillis()
     }
 
     /**
@@ -199,7 +204,7 @@ object TrackLog {
      * cache, or the track a cold start resumes on.
      */
     suspend fun forTrack(song: Song, stats: NerdStats.Snapshot?): String = withContext(Dispatchers.Default) {
-        val held = synchronized(lines) { lines.toList() }
+        val held = linesLock.withLock { lines.toList() }
         val from = listOfNotNull(
             held.firstOrNull { it.track == song.videoId }?.at,
             startedAt[song.videoId]?.minus(LEAD_IN_MS),
@@ -207,7 +212,7 @@ object TrackLog {
         val since = held.filter { from == null || it.at >= from }
         val window = since.filter { it.track == null || it.track == song.videoId }
         header(song, stats, from, window.size, since.size - window.size) + "\n" +
-            window.joinToString("\n") { "${CLOCK.format(Date(it.at))} ${it.level} ${it.text}" } +
+            window.joinToString("\n") { "${platformLogStamp(it.at)} ${it.level} ${it.text}" } +
             "\n"
     }
 
@@ -234,8 +239,8 @@ object TrackLog {
         appendLine("playing: ${stats.describe()}")
         sourcesLine()?.let(::appendLine)
         appendLine(
-            "window: ${from?.let { CLOCK.format(Date(it)) } ?: "everything held"} → " +
-                "${CLOCK.format(Date())} ($count lines" +
+            "window: ${from?.let { platformLogStamp(it) } ?: "everything held"} → " +
+                "${platformLogStamp(platformWallClockMillis())} ($count lines" +
                 (if (elsewhere > 0) ", $elsewhere for other tracks left out)" else ")"),
         )
         headerLines().forEach(::appendLine)
@@ -259,8 +264,6 @@ object TrackLog {
         }
         return measured + promised + tier
     }
-
-    private val CLOCK = SimpleDateFormat("HH:mm:ss.SSS", Locale.US)
 
     /**
      * How far back of a track's selection to reach when nothing was ever filed
