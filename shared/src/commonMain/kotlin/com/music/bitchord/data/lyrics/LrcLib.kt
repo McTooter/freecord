@@ -1,7 +1,7 @@
 package com.music.bitchord.data.lyrics
 
-import com.music.bitchord.data.Http
-import kotlinx.coroutines.Dispatchers
+import com.music.bitchord.platform.AppIoDispatcher
+import io.ktor.http.encodeURLParameter
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -9,29 +9,26 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.jsonPrimitive
-import okhttp3.HttpUrl.Companion.toHttpUrl
-import okhttp3.Request
 import kotlin.math.abs
 
 /**
- * Lyrics from LRCLIB — a free, key-less, community lyrics database.
+ * Lyrics from LRCLIB - a free, key-less, community lyrics database.
  *
  * Two calls: an exact `get` keyed on artist + title + duration, and a fuzzy
  * `search` when that misses (YouTube Music titles carry "(From ...)" and
  * "| Official Video" noise that the exact endpoint won't match). Results are
- * line-synced `[mm:ss.xx]` LRC — LRCLIB has no word-level timing, so
+ * line-synced `[mm:ss.xx]` LRC - LRCLIB has no word-level timing, so
  * highlighting is per line.
  */
 object LrcLib {
 
     private const val BASE = "https://lrclib.net/api"
-    private const val AGENT = "BitChord (https://github.com/bitchord)"
 
     private val json = Json { ignoreUnknownKeys = true }
 
     /** Synced lyrics for a track, or null when nothing usable is published. */
     suspend fun lyrics(title: String, artist: String, durationMs: Long): List<LyricLine>? =
-        withContext(Dispatchers.IO) {
+        withContext(AppIoDispatcher) {
             val cleanTitle = title.clean()
             val cleanArtist = artist.clean()
             val seconds = (durationMs / 1000).toInt()
@@ -42,27 +39,25 @@ object LrcLib {
             synced?.let(::parseLrc)?.takeIf { it.isNotEmpty() }
         }
 
-    private fun exactMatch(title: String, artist: String, seconds: Int): String? {
-        val url = "$BASE/get".toHttpUrl().newBuilder()
-            .addQueryParameter("track_name", title)
-            .addQueryParameter("artist_name", artist)
-            .addQueryParameter("duration", seconds.toString())
-            .build()
-        val body = get(url.toString()) ?: return null
+    private suspend fun exactMatch(title: String, artist: String, seconds: Int): String? {
+        val url = query(
+            "$BASE/get",
+            "track_name" to title,
+            "artist_name" to artist,
+            "duration" to seconds.toString(),
+        )
+        val body = get(url) ?: return null
         return (json.parseToJsonElement(body) as? JsonObject)
             ?.get("syncedLyrics")?.jsonPrimitive?.contentOrNull
     }
 
     /**
      * Fuzzy fallback. Prefers whichever hit is closest in length to what we're
-     * actually playing — same song, different edit, would drift otherwise.
+     * actually playing - same song, different edit, would drift otherwise.
      */
-    private fun bestSearchHit(title: String, artist: String, seconds: Int): String? {
-        val url = "$BASE/search".toHttpUrl().newBuilder()
-            .addQueryParameter("track_name", title)
-            .addQueryParameter("artist_name", artist)
-            .build()
-        val body = get(url.toString()) ?: return null
+    private suspend fun bestSearchHit(title: String, artist: String, seconds: Int): String? {
+        val url = query("$BASE/search", "track_name" to title, "artist_name" to artist)
+        val body = get(url) ?: return null
         val hits = json.parseToJsonElement(body) as? JsonArray ?: return null
         return hits.mapNotNull { it as? JsonObject }
             .filter { it["syncedLyrics"]?.jsonPrimitive?.contentOrNull?.isNotBlank() == true }
@@ -73,18 +68,18 @@ object LrcLib {
             ?.get("syncedLyrics")?.jsonPrimitive?.contentOrNull
     }
 
-    private fun get(url: String): String? {
-        val request = Request.Builder().url(url).header("User-Agent", AGENT).build()
-        Http.client.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) return null
-            return response.body?.string()
+    private suspend fun get(url: String): String? = lyricsGet(url)
+
+    /** What okhttp's `addQueryParameter` did: each value percent-encoded. */
+    private fun query(base: String, vararg params: Pair<String, String>): String =
+        params.joinToString(separator = "&", prefix = "$base?") { (key, value) ->
+            "${key.encodeURLParameter()}=${value.encodeURLParameter()}"
         }
-    }
 
     /**
      * `[mm:ss.xx] words`. Metadata tags carry no timestamp and fall out on
      * their own. A stamp with no words marks an instrumental break; those are
-     * kept, but only where the silence is long enough to be worth showing —
+     * kept, but only where the silence is long enough to be worth showing -
      * otherwise the line would blink out between two sung phrases. A stamp
      * with nothing after it closes the final line, so it always survives.
      */
@@ -115,13 +110,13 @@ object LrcLib {
 
         val kept = all.filterIndexed { index, line ->
             if (!line.isGap) return@filterIndexed true
-            // A trailing stamp closes off the last line — that's the outro.
+            // A trailing stamp closes off the last line - that's the outro.
             val next = all.getOrNull(index + 1) ?: return@filterIndexed true
             next.timeMs - line.timeMs >= MIN_GAP_MS
         }
 
-        // Nothing stands for the intro — LRC files start at the first sung
-        // word — so give the run-up its own break when it's long enough.
+        // Nothing stands for the intro - LRC files start at the first sung
+        // word - so give the run-up its own break when it's long enough.
         val first = kept.firstOrNull() ?: return kept
         return if (!first.isGap && first.timeMs >= MIN_GAP_MS) {
             listOf(LyricLine(0L, "")) + kept
@@ -134,7 +129,7 @@ object LrcLib {
      * Strip the alignment marker written by [toEnhancedLrc] and return the
      * clean body along with the recovered alignment.
      *
-     * The marker is `<R>` — a word-stamp-looking token that never appears in
+     * The marker is `<R>` - a word-stamp-looking token that never appears in
      * genuine A2 output (word stamps use `<mm:ss.xx>`, not bare `<R>`). It sits
      * at the very start of the body, before the first real stamp.
      */
@@ -148,8 +143,8 @@ object LrcLib {
     private const val ALIGNMENT_MARKER = "<R>"
 
     /**
-     * YouTube Music titles are noisy — "(From "Raees")", "| Official Video",
-     * "(Lyrical)" — and LRCLIB matches on the plain song name.
+     * YouTube Music titles are noisy - "(From "Raees")", "| Official Video",
+     * "(Lyrical)" - and LRCLIB matches on the plain song name.
      */
     private fun String.clean(): String = this
         .replace(NOISE, " ")
@@ -168,7 +163,7 @@ object LrcLib {
      * A2 writers produce.
      *
      * Empty for a plain line, which is what keeps [LyricLine.isWordSynced]
-     * honest — a line-synced source stays line-synced through this.
+     * honest - a line-synced source stays line-synced through this.
      */
     private fun parseWordRuns(body: String): List<LyricWord> {
         val marks = WORD_STAMP.findAll(body).toList()
@@ -177,7 +172,7 @@ object LrcLib {
             val until = marks.getOrNull(index + 1)?.range?.first ?: body.length
             msOf(mark) to body.substring(mark.range.last + 1, until)
         }
-        // The next run's stamp is this one's end — including when that run is
+        // The next run's stamp is this one's end - including when that run is
         // the closing terminator, which is the only thing that gives the last
         // word of a line an end at all. A run with no space after it is one
         // syllable of a word that carries on, which is how [toEnhancedLrc]

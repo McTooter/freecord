@@ -1,7 +1,16 @@
 package com.music.bitchord.platform
 
+import io.ktor.client.HttpClient
+import io.ktor.client.HttpClientConfig
+import io.ktor.client.engine.okhttp.OkHttp
+import kotlinx.coroutines.Dispatchers
 import java.text.Normalizer
 import java.util.concurrent.locks.ReentrantLock
+
+internal actual fun platformHttpClient(block: HttpClientConfig<*>.() -> Unit): HttpClient = HttpClient(OkHttp, block)
+
+/** The JVM's blocking pool, exactly as the code that called it always had. */
+internal actual val AppIoDispatcher get() = Dispatchers.IO
 
 actual class AppLock {
     private val lock = ReentrantLock()

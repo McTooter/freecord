@@ -1,5 +1,9 @@
 package com.music.bitchord.platform
 
+import io.ktor.client.HttpClient
+import io.ktor.client.HttpClientConfig
+import io.ktor.client.engine.darwin.Darwin
+import kotlinx.coroutines.Dispatchers
 import platform.Foundation.NSLocale
 import platform.Foundation.NSLocaleLanguageCode
 import platform.Foundation.componentsFromLocaleIdentifier
@@ -8,6 +12,15 @@ import platform.Foundation.preferredLanguages
 import kotlin.time.TimeSource
 
 private val monotonicOrigin = TimeSource.Monotonic.markNow()
+
+internal actual fun platformHttpClient(block: HttpClientConfig<*>.() -> Unit): HttpClient = HttpClient(Darwin, block)
+
+/**
+ * URLSession answers on its own threads, so there is no blocking pool to
+ * preserve here; `Dispatchers.IO` on Native would be an internal alias of
+ * Default anyway.
+ */
+internal actual val AppIoDispatcher get() = Dispatchers.Default
 
 actual class AppLock {
     private val lock = platform.Foundation.NSLock()

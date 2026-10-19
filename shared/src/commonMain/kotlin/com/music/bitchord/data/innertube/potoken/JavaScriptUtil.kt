@@ -7,8 +7,7 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.long
-import okio.ByteString.Companion.decodeBase64
-import okio.ByteString.Companion.toByteString
+import kotlin.io.encoding.Base64
 
 /**
  * Parses the raw challenge data obtained from the Create endpoint and returns an object that can be
@@ -75,7 +74,7 @@ fun parseIntegrityTokenData(rawIntegrityTokenData: String): Pair<String, Long> {
  * `Uint8Array` that can be embedded directly in JavaScript code.
  */
 fun stringToU8(identifier: String): String {
-    return newUint8Array(identifier.toByteArray())
+    return newUint8Array(identifier.encodeToByteArray())
 }
 
 /**
@@ -87,8 +86,7 @@ fun u8ToBase64(poToken: String): String {
     return poToken.split(",")
         .map { it.toUByte().toByte() }
         .toByteArray()
-        .toByteString()
-        .base64()
+        .let { Base64.encode(it) }
         .replace("+", "-")
         .replace("/", "_")
 }
@@ -124,6 +122,9 @@ private fun base64ToByteString(base64: String): ByteArray {
         .replace('_', '/')
         .replace('.', '=')
 
-    return (base64Mod.decodeBase64() ?: throw PoTokenException("Cannot base64 decode"))
-        .toByteArray()
+    // okio's decodeBase64 ?: throw, on the stdlib encoder: it signals a bad
+    // input by exception rather than by answering null.
+    val decoded = runCatching { Base64.decode(base64Mod) }
+        .getOrElse { throw PoTokenException("Cannot base64 decode") }
+    return decoded
 }

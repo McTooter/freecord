@@ -45,7 +45,9 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.decodeFromJsonElement
 import kotlinx.serialization.json.encodeToJsonElement
-import java.util.logging.Logger
+import com.music.bitchord.platform.AppLock
+import com.music.bitchord.platform.withLock
+import kotlin.concurrent.Volatile
 import kotlin.coroutines.CoroutineContext
 import kotlin.time.Duration.Companion.seconds
 
@@ -82,7 +84,18 @@ open class DiscordWebSocket(
     private val browser: String = "Discord Android",
     private val device: String = "Generic Android Device",
 ) : CoroutineScope {
-    private val logger = Logger.getLogger(DiscordWebSocket::class.java.name)
+    /**
+ * The gateway's own log lines.
+ *
+ * These were java.util.logging, which no non-JVM platform has; the lines
+ * themselves are diagnostics for a debug build - Gateway: ... already says
+ * where they came from - so the shared shape survives and the platform
+ * sink does not.
+ */
+private object logger {
+    fun info(message: String) { println(message) }
+    fun warning(message: String) { println(message) }
+}
     private val gatewayUrl = "wss://gateway.discord.gg/?v=9&encoding=json"
     private var websocket: DefaultClientWebSocketSession? = null
     private var sequence = 0
@@ -120,7 +133,7 @@ open class DiscordWebSocket(
      */
     private var connectionLoop: Job? = null
 
-    private val loopLock = Any()
+    private val loopLock = AppLock()
 
     /** Set by [close]. Stops the loop retrying an intentionally closed socket. */
     @Volatile
@@ -177,7 +190,7 @@ open class DiscordWebSocket(
     /** Starts the connection loop if it isn't already running. */
     fun connect() {
         if (closed) return
-        synchronized(loopLock) {
+        loopLock.withLock {
             if (connectionLoop?.isActive == true) {
                 logger.info("Gateway connection loop already running.")
                 return
@@ -593,16 +606,13 @@ open class DiscordWebSocket(
 /**
  * Milliseconds since boot, counting time the device spent asleep.
  *
- * `System.nanoTime` is not that on Android — it can stop during deep sleep,
- * which is exactly when this reading matters: the point of it is to notice that
- * a lot of wall time has passed with nothing heard from Discord. So Android's
- * own clock is used where there is one, found reflectively because this module
- * is shared with the desktop and cannot import it.
+ * The platforms read it differently because the platforms sleep differently.
+ * Android stops `System.nanoTime` during deep sleep - which is exactly when
+ * this reading matters, the point of it being to notice that a lot of time has
+ * passed with nothing heard from Discord - so the JVM answer reaches for
+ * Android's own clock where there is one (found reflectively, this source set
+ * being shared with the desktop) and only falls back to `nanoTime` there. iOS
+ * reads its monotonic clock: a device asleep through a presence session
+ * reconnects rather than sitting stale, which is the right failure.
  */
-private val androidElapsedRealtime: java.lang.reflect.Method? = runCatching {
-    Class.forName("android.os.SystemClock").getMethod("elapsedRealtime")
-}.getOrNull()
-
-internal fun elapsedRealtimeMs(): Long =
-    androidElapsedRealtime?.let { runCatching { it.invoke(null) as Long }.getOrNull() }
-        ?: (System.nanoTime() / 1_000_000L)
+internal expect fun elapsedRealtimeMs(): Long

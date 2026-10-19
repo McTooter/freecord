@@ -1,5 +1,7 @@
 package com.music.bitchord.platform
 
+import kotlinx.coroutines.CoroutineDispatcher
+
 /**
  * Mutual exclusion for code every platform runs.
  *
@@ -111,3 +113,14 @@ class AppConcurrentMap<K, V> {
 }
 
 private class PutReturnedNull : IllegalStateException("map.put returned null; use put() for the nullable answer")
+
+/**
+ * Where the app's blocking-oriented work goes: fetches, disk, anything that
+ * used `Dispatchers.IO` in the sources this port reads.
+ *
+ * The JVM keeps that pool exactly. iOS reads [Dispatchers.Default] - Native
+ * has no public IO dispatcher, and URLSession does not need one: the engine
+ * returns to its own callback threads and this pool never has to absorb
+ * blocking work on that side.
+ */
+internal expect val AppIoDispatcher: CoroutineDispatcher
