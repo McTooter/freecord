@@ -7,12 +7,17 @@ import io.ktor.client.engine.darwin.DarwinHttpRequestException
 import kotlinx.coroutines.Dispatchers
 import platform.Foundation.NSDate
 import platform.Foundation.NSDateFormatter
+import platform.Foundation.NSNumber
+import platform.Foundation.NSNumberFormatter
+import platform.Foundation.NSNumberFormatterDecimalStyle
 import platform.Foundation.NSLocale
 import platform.Foundation.NSLocaleLanguageCode
+import platform.Foundation.NSString
 import platform.Foundation.componentsFromLocaleIdentifier
 import platform.Foundation.currentLocale
 import platform.Foundation.preferredLanguages
 import platform.Foundation.timeIntervalSince1970
+import platform.Foundation.uppercaseStringWithLocale
 import kotlin.coroutines.CoroutineContext
 import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.native.concurrent.ThreadLocal
@@ -60,6 +65,21 @@ actual fun platformDisplayNameOfTag(tag: String, inLanguageTag: String): String 
     // A tag the system knows nothing about comes back as its own identifier —
     // the same echo java.util.Locale gives, and as unhelpful.
     return named as? String ?: tag
+}
+
+actual fun platformDefaultUppercase(text: String): String =
+    (text as NSString).uppercaseStringWithLocale(NSLocale.currentLocale)
+
+actual fun platformSignedDecimal(value: Float, fractionDigits: Int): String {
+    val formatter = NSNumberFormatter()
+    formatter.numberStyle = NSNumberFormatterDecimalStyle
+    formatter.minimumFractionDigits = fractionDigits.toULong()
+    formatter.maximumFractionDigits = fractionDigits.toULong()
+    // The label always shows its sign; the formatter only spells "+" when told.
+    formatter.positivePrefix = "+"
+    val text = formatter.stringFromNumber(NSNumber(double = value.toDouble()))
+    return text
+        ?: (if (value < 0f) "-" else "+") + value.toString()
 }
 
 actual fun normalizeNfd(text: String): String = foldDiacritics(text)

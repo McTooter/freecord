@@ -55,6 +55,11 @@ actual fun platformDisplayNameOfTag(tag: String, inLanguageTag: String): String 
     return java.util.Locale.forLanguageTag(tag).getDisplayName(inLocale)
 }
 
+actual fun platformDefaultUppercase(text: String): String = text.uppercase(Locale.getDefault())
+
+actual fun platformSignedDecimal(value: Float, fractionDigits: Int): String =
+    String.format(Locale.getDefault(), "%+.*f", fractionDigits, value.toDouble())
+
 actual fun normalizeNfd(text: String): String = Normalizer.normalize(text, Normalizer.Form.NFD)
 
 actual fun normalizeNfkc(text: String): String = Normalizer.normalize(text, Normalizer.Form.NFKC)
