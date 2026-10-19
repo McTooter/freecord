@@ -1,0 +1,71 @@
+name: iOS
+
+# Builds the sideloadable .ipa: an unsigned Release build of iosApp for a
+# real device, packed as Payload/iosApp.app -> BitChord.ipa. Whoever
+# installs it re-signs it locally — SideStore, AltStore, Sideloadly — which
+# is the whole sideloading model; the workflow signs nothing and pushes
+# nothing but the artifact.
+on:
+  push:
+    branches: [main, master, ios]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ios-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ipa:
+    name: Build .ipa
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-ios-${{ hashFiles('**/*.gradle.kts', 'gradle/wrapper/gradle-wrapper.properties', 'gradle/libs.versions.toml') }}
+          restore-keys: gradle-ios-
+
+      # One xcodebuild does everything: the project's "Embed the Kotlin
+      # framework" phase runs `./gradlew :ios:embedAndSignAppleFrameworkForXcode`,
+      # which builds the Kotlin framework for the target Xcode asked for,
+      # links it (OTHER_LDFLAGS: -framework BitChord) and embeds it. Signing
+      # is off entirely — the .ipa is re-signed by its installer, and an
+      # unsigned build needs no team, no certificate and no provisioning
+      # profile on the runner.
+      - name: Build (Release, device, unsigned)
+        run: |
+          xcodebuild \
+            -project iosApp/iosApp.xcodeproj \
+            -scheme iosApp \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build
+
+      - name: Pack .ipa
+        run: |
+          mkdir -p Payload
+          cp -R build/Build/Products/Release-iphoneos/iosApp.app Payload/
+          zip -9 -r BitChord.ipa Payload
+
+      - name: Upload .ipa
+        uses: actions/upload-artifact@v4
+        with:
+          name: BitChord-ipa
+          path: BitChord.ipa
+          if-no-files-found: error
