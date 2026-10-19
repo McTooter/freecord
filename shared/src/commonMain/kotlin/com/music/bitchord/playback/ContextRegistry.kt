@@ -1,7 +1,9 @@
 package com.music.bitchord.playback
 
 import com.music.bitchord.data.model.Song
-import java.util.Collections
+import com.music.bitchord.platform.AppLock
+import com.music.bitchord.platform.immutableCopyOf
+import com.music.bitchord.platform.withLock
 
 /**
  * Identity of a row within a collection. A playlist may list the same video
@@ -120,7 +122,7 @@ data class ContinuationResult(
 class ContextRegistry(
     onGrowth: (ContextSnapshot) -> Unit = {},
 ) {
-    private val lock = Any()
+    private val lock = AppLock()
     private var active: MutableContext? = null
     private var nextVersion = 0L
     private var nextRequestId = 0L
@@ -142,7 +144,7 @@ class ContextRegistry(
         songs: List<Song>,
         continuationToken: String? = null,
     ): ContextSnapshot {
-        val snapshot = synchronized(lock) {
+        val snapshot = lock.withLock {
             val token = continuationToken.normalizedToken()
             val version = newVersionLocked()
             active = MutableContext(
@@ -199,7 +201,7 @@ class ContextRegistry(
         }
         token?.let(seenTokens::add)
 
-        val restored = synchronized(lock) {
+        val restored = lock.withLock {
             val state = when (snapshot.continuationState) {
                 ContinuationState.IN_FLIGHT -> ContinuationState.AVAILABLE
                 else -> snapshot.continuationState
@@ -223,7 +225,7 @@ class ContextRegistry(
     }
 
     /** Returns the current canonical state, or null before the first register. */
-    fun snapshot(): ContextSnapshot? = synchronized(lock) { active?.snapshot() }
+    fun snapshot(): ContextSnapshot? = lock.withLock { active?.snapshot() }
 
     /**
      * Adds songs to the active canonical list. This is intended for direct
@@ -241,15 +243,15 @@ class ContextRegistry(
         expectedVersion: Long? = null,
     ): AppendResult {
         var callbackSnapshot: ContextSnapshot? = null
-        val result = synchronized(lock) {
-            val state = active ?: return@synchronized AppendResult(
+        val result = lock.withLock {
+            val state = active ?: return@withLock AppendResult(
                 status = AppendStatus.NO_ACTIVE_CONTEXT,
                 snapshot = null,
             )
             if (state.contextToken != contextToken ||
                 (expectedVersion != null && state.version != expectedVersion)
             ) {
-                return@synchronized AppendResult(
+                return@withLock AppendResult(
                     status = AppendStatus.STALE_CONTEXT,
                     snapshot = state.snapshot(),
                 )
@@ -257,7 +259,7 @@ class ContextRegistry(
 
             val added = newSongs(state.songs, songs)
             if (added.isEmpty()) {
-                return@synchronized AppendResult(
+                return@withLock AppendResult(
                     status = AppendStatus.NO_NEW_SONGS,
                     snapshot = state.snapshot(),
                 )
@@ -286,13 +288,13 @@ class ContextRegistry(
     }
 
     /** Adds a growth listener and returns its removal id. */
-    fun addGrowthListener(listener: (ContextSnapshot) -> Unit): Long = synchronized(lock) {
+    fun addGrowthListener(listener: (ContextSnapshot) -> Unit): Long = lock.withLock {
         val id = nextListenerId++
         growthListeners[id] = listener
         id
     }
 
-    fun removeGrowthListener(id: Long): Boolean = synchronized(lock) {
+    fun removeGrowthListener(id: Long): Boolean = lock.withLock {
         growthListeners.remove(id) != null
     }
 
@@ -303,15 +305,15 @@ class ContextRegistry(
      * context handle and does not want to claim a newer context by accident.
      */
     fun claimContinuation(expectedContextToken: String? = null): ContinuationRequest? =
-        synchronized(lock) {
-            val state = active ?: return@synchronized null
+        lock.withLock {
+            val state = active ?: return@withLock null
             if (expectedContextToken != null && state.contextToken != expectedContextToken) {
-                return@synchronized null
+                return@withLock null
             }
             if (state.continuationState != ContinuationState.AVAILABLE ||
                 state.continuationToken == null
             ) {
-                return@synchronized null
+                return@withLock null
             }
 
             val request = ContinuationRequest(
@@ -336,10 +338,10 @@ class ContextRegistry(
      */
     fun complete(request: ContinuationRequest, page: ContinuationPage): ContinuationResult {
         var callbackSnapshot: ContextSnapshot? = null
-        val result = synchronized(lock) {
+        val result = lock.withLock {
             val state = active
             if (state == null || !state.matches(request)) {
-                return@synchronized staleResult(state)
+                return@withLock staleResult(state)
             }
 
             val nextToken = page.continuationToken.normalizedToken()
@@ -356,7 +358,7 @@ class ContextRegistry(
                 state.request = null
                 state.continuationState = ContinuationState.BLOCKED
                 state.diagnostic = diagnostic
-                return@synchronized ContinuationResult(
+                return@withLock ContinuationResult(
                     status = ContinuationResultStatus.REJECTED_NO_PROGRESS,
                     snapshot = state.snapshot(),
                     diagnostic = diagnostic,
@@ -390,10 +392,10 @@ class ContextRegistry(
      * token remains available for a later retry; a stale failure is ignored.
      */
     fun fail(request: ContinuationRequest, error: Throwable? = null): ContinuationResult =
-        synchronized(lock) {
+        lock.withLock {
             val state = active
             if (state == null || !state.matches(request)) {
-                return@synchronized staleResult(state)
+                return@withLock staleResult(state)
             }
 
             state.request = null
@@ -417,7 +419,7 @@ class ContextRegistry(
     )
 
     private fun notifyGrowth(snapshot: ContextSnapshot) {
-        val listeners = synchronized(lock) { growthListeners.values.toList() }
+        val listeners = lock.withLock { growthListeners.values.toList() }
         listeners.forEach { it(snapshot) }
     }
 
@@ -447,7 +449,7 @@ class ContextRegistry(
             continuationToken = continuationToken,
             continuationState = continuationState,
             diagnostic = diagnostic,
-            seenContinuationTokens = Collections.unmodifiableList(seenContinuationTokens.toList()),
+            seenContinuationTokens = immutableCopyOf(seenContinuationTokens),
         )
 
         fun matches(candidate: ContinuationRequest): Boolean =
@@ -471,13 +473,13 @@ class ContextRegistry(
                     "restored songs must not contain duplicate video ids"
                 }
             }
-            return Collections.unmodifiableList(songs.toList())
+            return immutableCopyOf(songs)
         }
 
         fun immutableSongs(songs: Collection<Song>): List<Song> {
             val byVideoId = LinkedHashMap<String, Song>(songs.size)
-            songs.forEach { byVideoId.putIfAbsent(it.contextEntryKey(), it) }
-            return Collections.unmodifiableList(byVideoId.values.toList())
+            songs.forEach { byVideoId.getOrPut(it.contextEntryKey()) { it } }
+            return immutableCopyOf(byVideoId.values)
         }
 
         fun newSongs(existing: List<Song>, candidates: List<Song>): List<Song> {

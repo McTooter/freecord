@@ -66,6 +66,13 @@ actual fun normalizeNfd(text: String): String = foldDiacritics(text)
 
 actual fun normalizeNfkc(text: String): String = foldCompatibility(text)
 
+/**
+ * `toList()` already hands back a fresh list, and Kotlin's read-only `List`
+ * is all common callers hold — there is no `Collections` to wrap it in, and
+ * no cast on this platform that would need one.
+ */
+actual fun <T> immutableCopyOf(source: Collection<T>): List<T> = source.toList()
+
 actual fun platformMonotonicNanos(): Long = monotonicOrigin.elapsedNow().inWholeNanoseconds
 
 actual fun platformWallClockMillis(): Long = (NSDate().timeIntervalSince1970 * 1000.0).toLong()

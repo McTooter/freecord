@@ -8,6 +8,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ThreadContextElement
 import java.text.Normalizer
 import java.text.SimpleDateFormat
+import java.util.Collections
 import java.util.Date
 import java.util.Locale
 import java.util.concurrent.locks.ReentrantLock
@@ -57,6 +58,9 @@ actual fun platformDisplayNameOfTag(tag: String, inLanguageTag: String): String 
 actual fun normalizeNfd(text: String): String = Normalizer.normalize(text, Normalizer.Form.NFD)
 
 actual fun normalizeNfkc(text: String): String = Normalizer.normalize(text, Normalizer.Form.NFKC)
+
+actual fun <T> immutableCopyOf(source: Collection<T>): List<T> =
+    Collections.unmodifiableList(source.toList())
 
 actual fun platformMonotonicNanos(): Long = System.nanoTime()
 
