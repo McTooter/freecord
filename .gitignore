@@ -48,3 +48,8 @@ AGENTS.md
 # Built packages — release APKs/bundles are handed out, never committed
 *.apk
 *.aab
+*.ipa
+
+# Xcode per-developer state (scheme selection, window layout)
+xcuserdata/
+*.xcuserstate
