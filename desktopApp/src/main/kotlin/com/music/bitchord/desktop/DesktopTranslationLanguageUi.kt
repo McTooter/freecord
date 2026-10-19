@@ -45,14 +45,15 @@ import java.util.Locale
 @Composable
 internal fun DesktopTranslationLanguageDialog(onDismiss: () -> Unit) {
     val stored by DesktopTranslationSetting.language.collectAsState()
-    val locale = remember { Locale.forLanguageTag(DesktopStrings.resolvedTag().ifBlank { "en" }) }
+    val localeTag = remember { DesktopStrings.resolvedTag().ifBlank { "en" } }
+    val locale = remember { Locale.forLanguageTag(localeTag) }
     var filter by remember { mutableStateOf("") }
 
     // Named in the reader's own language, and sorted that way too — the table's own order is
     // alphabetical by English name, which is not alphabetical once localised.
     val named = remember(locale) {
         TRANSLATION_LANGUAGES
-            .map { it.code to translationLanguageName(it.code, locale) }
+            .map { it.code to translationLanguageName(it.code, localeTag) }
             .sortedBy { it.second.lowercase(locale) }
     }
     val shown = remember(named, filter) {
@@ -90,7 +91,7 @@ internal fun DesktopTranslationLanguageDialog(onDismiss: () -> Unit) {
             item {
                 LanguageRow(
                     name = DesktopStrings["d_follow_the_app_language", "Follow the app language"],
-                    detail = translationLanguageName(DesktopStrings.resolvedTag(), locale),
+                    detail = translationLanguageName(DesktopStrings.resolvedTag(), localeTag),
                     selected = stored.isBlank(),
                     onClick = { DesktopTranslationSetting.set("") },
                 )

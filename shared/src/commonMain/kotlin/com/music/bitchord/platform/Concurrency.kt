@@ -71,7 +71,10 @@ class AppConcurrentMap<K, V> {
 
     operator fun get(key: K): V? = lock.withLock { map[key] }
 
-    operator fun set(key: K, value: V): V = lock.withLock { map.put(key, value) ?: throw PutReturnedNull() }
+    operator fun set(key: K, value: V): V = lock.withLock {
+        map[key] = value
+        value
+    }
 
     fun put(key: K, value: V): V? = lock.withLock { map.put(key, value) }
 
@@ -122,8 +125,6 @@ class AppConcurrentMap<K, V> {
         for ((key, value) in snapshot) block(key, value)
     }
 }
-
-private class PutReturnedNull : IllegalStateException("map.put returned null; use put() for the nullable answer")
 
 /**
  * Where the app's blocking-oriented work goes: fetches, disk, anything that

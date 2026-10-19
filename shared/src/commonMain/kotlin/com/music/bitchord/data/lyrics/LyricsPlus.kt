@@ -1,6 +1,9 @@
 package com.music.bitchord.data.lyrics
 
-import kotlinx.coroutines.Dispatchers
+import com.music.bitchord.platform.AppAtomic
+import com.music.bitchord.platform.AppIoDispatcher
+import io.ktor.http.URLBuilder
+import io.ktor.http.takeFrom
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.selects.select
@@ -13,8 +16,6 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonPrimitive
-import okhttp3.HttpUrl.Companion.toHttpUrl
-import java.util.concurrent.atomic.AtomicReference
 
 /**
  * Syllable-timed lyrics from LyricsPlus, the open backend behind the YouLy+
@@ -39,7 +40,7 @@ object LyricsPlus {
         "https://lyrics-plus-backend.vercel.app",
     )
 
-    private val lastGood = AtomicReference<String?>(null)
+    private val lastGood = AppAtomic<String?>(null)
 
     suspend fun lyrics(
         title: String,
@@ -53,7 +54,7 @@ object LyricsPlus {
             ?: MIRRORS
 
         val pending = hosts.map { host ->
-            host to async(Dispatchers.IO) { fetch(host, title, artist, durationMs, album, isrc) }
+            host to async(AppIoDispatcher) { fetch(host, title, artist, durationMs, album, isrc) }
         }.toMutableList()
 
         // Take the first mirror to answer with something usable rather than
@@ -83,18 +84,18 @@ object LyricsPlus {
         durationMs: Long,
         album: String?,
         isrc: String?,
-    ): List<LyricLine>? = withContext(Dispatchers.IO) {
-        val url = "$host/v2/lyrics/get".toHttpUrl().newBuilder()
-            .addQueryParameter("title", title)
-            .addQueryParameter("artist", artist)
+    ): List<LyricLine>? = withContext(AppIoDispatcher) {
+        val url = URLBuilder().takeFrom("$host/v2/lyrics/get")
             .apply {
+                parameters.append("title", title)
+                parameters.append("artist", artist)
                 val seconds = durationMs / 1000
-                if (seconds > 0) addQueryParameter("duration", seconds.toString())
-                if (!album.isNullOrBlank()) addQueryParameter("album", album)
+                if (seconds > 0) parameters.append("duration", seconds.toString())
+                if (!album.isNullOrBlank()) parameters.append("album", album)
                 // Sent alongside the name rather than instead of it: unlike
                 // [BiniLyrics] this backend aggregates several catalogues, and
                 // the ones with no ISRC index still need something to match on.
-                if (!isrc.isNullOrBlank()) addQueryParameter("isrc", isrc)
+                if (!isrc.isNullOrBlank()) parameters.append("isrc", isrc)
             }
             .build()
 

@@ -1,14 +1,15 @@
 package com.music.bitchord.data.lyrics
 
+import com.music.bitchord.platform.AppConcurrentMap
+import com.music.bitchord.platform.AppIoDispatcher
+import com.music.bitchord.platform.AppLock
+import com.music.bitchord.platform.withLock
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withTimeoutOrNull
-import java.util.Collections
-import java.util.concurrent.ConcurrentHashMap
 
 /**
  * Where the player gets its lyrics.
@@ -117,7 +118,7 @@ object LyricsRepository {
         // Settled before anyone is asked for words, so every source that can
         // name the recording does. What the caller knows beats what we worked
         // out last time, and both beat asking again.
-        val known = isrc?.takeIf { it.isNotBlank() } ?: isrcs[videoId]
+        val known = isrc?.takeIf { it.isNotBlank() } ?: remembered(videoId)
         val hit = if (known == null) {
             identify(videoId, searchTitle, searchArtist, durationMs, album, sequence)
         } else {
@@ -130,7 +131,7 @@ object LyricsRepository {
         // it starts lazily and is only contacted if all higher-priority synced sources miss.
         val racing: List<Pair<LyricsSource, Deferred<Result?>>> = sequence.map { source ->
             val startMode = if (source == LyricsSource.GENIUS) kotlinx.coroutines.CoroutineStart.LAZY else kotlinx.coroutines.CoroutineStart.DEFAULT
-            source to async(Dispatchers.IO, start = startMode) {
+            source to async(AppIoDispatcher, start = startMode) {
                 onSourceStarted?.invoke(source)
                 try {
                     val found = fetch(
@@ -273,15 +274,21 @@ object LyricsRepository {
      * did before any of this, and keeping it on disk would mean keeping a
      * wrong answer on disk too.
      */
-    private val isrcs: MutableMap<String, String> = Collections.synchronizedMap(
-        object : LinkedHashMap<String, String>(REMEMBERED, 0.75f, true) {
-            override fun removeEldestEntry(eldest: Map.Entry<String, String>) = size > REMEMBERED
-        },
-    )
+    private val isrcsLock = AppLock()
+    private val isrcs = LinkedHashMap<String, String>()
+
+    /** Reads the map, refreshing the entry's place in the LRU as the access-ordered original did. */
+    private fun remembered(videoId: String): String? = isrcsLock.withLock {
+        isrcs.remove(videoId)?.also { isrcs[videoId] = it }
+    }
 
     private fun remember(videoId: String, isrc: String?) {
         if (isrc.isNullOrBlank() || videoId.isEmpty()) return
-        isrcs.put(videoId, isrc)
+        isrcsLock.withLock {
+            isrcs.remove(videoId)
+            isrcs[videoId] = isrc
+            while (isrcs.size > REMEMBERED) isrcs.remove(isrcs.keys.first())
+        }
     }
 
     /**
@@ -295,11 +302,11 @@ object LyricsRepository {
      * the other one's copy down with it; [cancel] ends whatever is left.
      */
     private class SharedDocuments(private val scope: CoroutineScope) {
-        private val inFlight = ConcurrentHashMap<String, Deferred<String?>>()
+        private val inFlight = AppConcurrentMap<String, Deferred<String?>>()
 
         suspend fun get(url: String): String? =
-            inFlight.computeIfAbsent(url) { scope.async(Dispatchers.IO) { lyricsGet(url) } }.await()
+            inFlight.computeIfAbsent(url) { scope.async(AppIoDispatcher) { lyricsGet(url) } }.await()
 
-        fun cancel() = inFlight.values.forEach { it.cancel() }
+        fun cancel() = inFlight.values().forEach { it.cancel() }
     }
 }

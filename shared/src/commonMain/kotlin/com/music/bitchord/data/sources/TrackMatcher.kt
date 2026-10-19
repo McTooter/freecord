@@ -1,9 +1,8 @@
 package com.music.bitchord.data.sources
 
 import com.music.bitchord.data.model.Song
+import com.music.bitchord.platform.normalizeNfkc
 import kotlin.math.abs
-import java.text.Normalizer
-import java.util.Locale
 
 /**
  * Decides whether one catalogue's track is the same recording as another's,
@@ -372,7 +371,7 @@ object TrackMatcher {
     )
 
     internal fun parseTitle(raw: String, artist: String = ""): TitleParts {
-        val versions = sortedSetOf<String>()
+        val versions = mutableSetOf<String>()
         val context = mutableSetOf<String>()
         var text = normalize(raw)
 
@@ -427,13 +426,13 @@ object TrackMatcher {
         // words. Standard word splitting and non-alphanumeric filtering fragment
         // these titles into empty or broken strings, so CJK titles keep their
         // raw character sequence intact (stripping only punctuation and whitespace).
-        val containsCJK = text.any {
-            Character.UnicodeBlock.of(it) in setOf(
-                Character.UnicodeBlock.HIRAGANA,
-                Character.UnicodeBlock.KATAKANA,
-                Character.UnicodeBlock.CJK_UNIFIED_IDEOGRAPHS,
-                Character.UnicodeBlock.HANGUL_SYLLABLES
-            )
+        // The four blocks the JVM code named: hiragana, katakana, the unified
+        // ideographs and the hangul syllables.
+        val containsCJK = text.any { c ->
+            c in '\u3040'..'\u309F' || // HIRAGANA
+                c in '\u30A0'..'\u30FF' || // KATAKANA
+                c in '\u4E00'..'\u9FFF' || // CJK_UNIFIED_IDEOGRAPHS
+                c in '\uAC00'..'\uD7AF' // HANGUL_SYLLABLES
         }
 
         var words = text.split(WORD_SPLIT)
@@ -466,7 +465,9 @@ object TrackMatcher {
         return TitleParts(
             words = words,
             core = coreString,
-            versions = versions,
+            // Sorted for iteration order: a TreeSet answered this set, and the
+            // only place the order surfaces is the query built from it.
+            versions = versions.sorted().toSet(),
             context = context,
         )
     }
@@ -521,8 +522,8 @@ object TrackMatcher {
      * every non-Latin catalogue out of matching entirely.
      */
     internal fun normalize(text: String): String =
-        Normalizer.normalize(text, Normalizer.Form.NFKC)
-            .lowercase(Locale.ROOT)
+        normalizeNfkc(text)
+            .lowercase()
             .replace("&", " and ")
             .replace(CJK_OPEN, "(")
             .replace(CJK_CLOSE, ")")

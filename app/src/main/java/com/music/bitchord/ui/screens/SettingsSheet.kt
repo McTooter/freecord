@@ -1044,7 +1044,7 @@ fun SettingsScreen(
                         } else {
                             translationLanguageName(
                                 translationLanguage,
-                                AppCompatDelegate.getApplicationLocales().get(0) ?: Locale.getDefault(),
+                                (AppCompatDelegate.getApplicationLocales().get(0) ?: Locale.getDefault()).toLanguageTag(),
                             )
                         },
                         trailing = { Chevron() },

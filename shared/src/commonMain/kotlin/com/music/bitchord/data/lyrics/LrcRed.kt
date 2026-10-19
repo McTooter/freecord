@@ -1,11 +1,11 @@
 package com.music.bitchord.data.lyrics
 
-import kotlinx.coroutines.Dispatchers
+import com.music.bitchord.platform.AppIoDispatcher
+import com.music.bitchord.platform.normalizeNfd
+import io.ktor.http.URLBuilder
+import io.ktor.http.takeFrom
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
-import okhttp3.HttpUrl.Companion.toHttpUrl
-import java.text.Normalizer
-import java.util.Locale
 import kotlin.math.abs
 
 /**
@@ -43,7 +43,7 @@ object LrcRed {
     private val ISRC = Regex("""[A-Z]{2}[A-Z0-9]{3}\d{7}""")
 
     fun documentUrl(isrc: String): String? =
-        isrc.trim().uppercase(Locale.ROOT).takeIf { ISRC.matches(it) }?.let { "${BASE}s/$it.ttml" }
+        isrc.trim().uppercase().takeIf { ISRC.matches(it) }?.let { "${BASE}s/$it.ttml" }
 
     /**
      * [get] is how the document is fetched; [LyricsRepository] passes one that
@@ -54,8 +54,19 @@ object LrcRed {
         artist: String,
         durationMs: Long,
         isrc: String? = null,
-        get: suspend (String) -> String? = { lyricsGet(it) },
-    ): List<LyricLine>? = withContext(Dispatchers.IO) {
+    ): List<LyricLine>? = lyrics(title, artist, durationMs, isrc) { lyricsGet(it) }
+
+    /**
+     * [get] is how the document is fetched; [LyricsRepository] passes one that
+     * shares the download with [BiniLyrics], which wants the very same file.
+     */
+    suspend fun lyrics(
+        title: String,
+        artist: String,
+        durationMs: Long,
+        isrc: String?,
+        get: suspend (String) -> String?,
+    ): List<LyricLine>? = withContext(AppIoDispatcher) {
         val known = isrc?.let(::documentUrl)
         if (known != null) document(known, get)?.let { return@withContext it }
 
@@ -71,8 +82,8 @@ object LrcRed {
         get(url)?.let(TtmlLyrics::parse)?.takeIf { it.isNotEmpty() }
 
     private suspend fun search(title: String, artist: String, durationMs: Long): Hit? {
-        val url = "${BASE}search.json".toHttpUrl().newBuilder()
-            .addQueryParameter("q", "$title $artist".trim())
+        val url = URLBuilder().takeFrom("${BASE}search.json")
+            .apply { parameters.append("q", "$title $artist".trim()) }
             .build()
         val body = lyricsGet(url.toString()) ?: return null
         val hits = runCatching { lyricsJson.decodeFromString<Response>(body) }.getOrNull()?.hits
@@ -135,9 +146,9 @@ object LrcRed {
 
     /** Lower case, accents off ("ROSÉ" is "rose"), and only letters and digits. */
     private fun normalized(value: String): String =
-        Normalizer.normalize(value, Normalizer.Form.NFD)
+        normalizeNfd(value)
             .replace(COMBINING_MARKS, "")
-            .lowercase(Locale.ROOT)
+            .lowercase()
             .map { if (it.isLetterOrDigit()) it else ' ' }
             .joinToString("")
             .replace(WHITESPACE, " ")

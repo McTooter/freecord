@@ -73,7 +73,7 @@ class BitChordApplication : Application(), SingletonImageLoader.Factory {
         // Full tag (zh-Hant / zh-Hans preserved); Innertube maps to hl/gl.
         Innertube.appLanguage = { AppCompatDelegate.getApplicationLocales().get(0)?.toLanguageTag() }
         migrateScriptOnlyAppLocale()
-        LyricsTranslation.cacheDir = cacheDir
+        LyricsTranslation.cacheDir = cacheDir.absolutePath
         // PlaybackService shares this process, so seeding the cookie here means
         // stream resolution is authenticated from the first play onwards.
         authStore = AuthStore(this)

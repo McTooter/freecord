@@ -3066,7 +3066,7 @@ internal fun rememberLyricsTranslation(
         }
     }
     val translationLanguageName = remember(configuredLocale, translationLanguage) {
-        translationLanguageName(translationLanguage, Locale.forLanguageTag(configuredLocale))
+        translationLanguageName(translationLanguage, configuredLocale)
     }
     // Resolved here, in composition, for the callbacks below to show.
     val alreadyInLanguageMessage = stringResource(Res.string.lyrics_already_in_language, translationLanguageName)

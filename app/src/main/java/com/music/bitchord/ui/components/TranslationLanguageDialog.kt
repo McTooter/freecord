@@ -87,7 +87,7 @@ fun TranslationLanguageDialog(
     // list is long, the platform lookup is not free, and the filter below reads
     // every one of them on every keystroke.
     val named = remember(appLocale) {
-        TRANSLATION_LANGUAGES.map { it to translationLanguageName(it.code, appLocale) }
+        TRANSLATION_LANGUAGES.map { it to translationLanguageName(it.code, appLocale.toLanguageTag()) }
     }
     val shown = remember(named, query) {
         val needle = query.trim()

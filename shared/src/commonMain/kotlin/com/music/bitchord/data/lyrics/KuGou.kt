@@ -1,11 +1,12 @@
 package com.music.bitchord.data.lyrics
 
-import kotlinx.coroutines.Dispatchers
+import com.music.bitchord.platform.AppIoDispatcher
+import io.ktor.http.URLBuilder
+import io.ktor.http.takeFrom
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.SerialName
-import okhttp3.HttpUrl.Companion.toHttpUrl
-import java.util.Base64
+import kotlin.io.encoding.Base64
 import kotlin.math.abs
 import kotlin.math.min
 
@@ -28,7 +29,7 @@ object KuGou {
         artist: String,
         durationMs: Long,
         album: String? = null,
-    ): List<LyricLine>? = withContext(Dispatchers.IO) {
+    ): List<LyricLine>? = withContext(AppIoDispatcher) {
         val keyword = keyword(title, artist, album)
         val seconds = (durationMs / 1000).toInt()
 
@@ -48,12 +49,14 @@ object KuGou {
      * as the right recording — and ordered closest match first.
      */
     private suspend fun searchSongs(keyword: Keyword, seconds: Int): List<String>? {
-        val url = "https://mobileservice.kugou.com/api/v3/search/song".toHttpUrl().newBuilder()
-            .addQueryParameter("version", "9108")
-            .addQueryParameter("plat", "0")
-            .addQueryParameter("pagesize", "8")
-            .addQueryParameter("showtype", "0")
-            .addQueryParameter("keyword", keyword.query)
+        val url = URLBuilder().takeFrom("https://mobileservice.kugou.com/api/v3/search/song")
+            .apply {
+                parameters.append("version", "9108")
+                parameters.append("plat", "0")
+                parameters.append("pagesize", "8")
+                parameters.append("showtype", "0")
+                parameters.append("keyword", keyword.query)
+            }
             .build()
         val body = lyricsGet(url.toString()) ?: return null
         val response = runCatching { lyricsJson.decodeFromString<SearchSongResponse>(body) }.getOrNull()
@@ -64,15 +67,17 @@ object KuGou {
     }
 
     private suspend fun searchLyrics(hash: String? = null, keyword: Keyword? = null, seconds: Int = -1): List<Candidate>? {
-        val builder = "https://lyrics.kugou.com/search".toHttpUrl().newBuilder()
-            .addQueryParameter("ver", "1")
-            .addQueryParameter("man", "yes")
-            .addQueryParameter("client", "pc")
+        val builder = URLBuilder().takeFrom("https://lyrics.kugou.com/search")
+            .apply {
+                parameters.append("ver", "1")
+                parameters.append("man", "yes")
+                parameters.append("client", "pc")
+            }
         when {
-            hash != null -> builder.addQueryParameter("hash", hash)
+            hash != null -> builder.parameters.append("hash", hash)
             keyword != null -> {
-                builder.addQueryParameter("keyword", keyword.query)
-                if (seconds > 0) builder.addQueryParameter("duration", (seconds * 1000).toString())
+                builder.parameters.append("keyword", keyword.query)
+                if (seconds > 0) builder.parameters.append("duration", (seconds * 1000).toString())
             }
             else -> return null
         }
@@ -82,19 +87,21 @@ object KuGou {
     }
 
     private suspend fun download(id: String, accessKey: String): String? {
-        val url = "https://lyrics.kugou.com/download".toHttpUrl().newBuilder()
-            .addQueryParameter("fmt", "lrc")
-            .addQueryParameter("charset", "utf8")
-            .addQueryParameter("client", "pc")
-            .addQueryParameter("ver", "1")
-            .addQueryParameter("id", id)
-            .addQueryParameter("accesskey", accessKey)
+        val url = URLBuilder().takeFrom("https://lyrics.kugou.com/download")
+            .apply {
+                parameters.append("fmt", "lrc")
+                parameters.append("charset", "utf8")
+                parameters.append("client", "pc")
+                parameters.append("ver", "1")
+                parameters.append("id", id)
+                parameters.append("accesskey", accessKey)
+            }
             .build()
         val body = lyricsGet(url.toString()) ?: return null
         val response = runCatching { lyricsJson.decodeFromString<DownloadResponse>(body) }.getOrNull()
             ?: return null
         val decoded = runCatching {
-            Base64.getDecoder().decode(response.content).toString(Charsets.UTF_8)
+            Base64.decode(response.content).decodeToString()
         }.getOrNull() ?: return null
         return decoded.stripCredits()
     }

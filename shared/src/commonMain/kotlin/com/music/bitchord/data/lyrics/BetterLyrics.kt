@@ -1,8 +1,9 @@
 package com.music.bitchord.data.lyrics
 
-import kotlinx.coroutines.Dispatchers
+import com.music.bitchord.platform.AppIoDispatcher
+import io.ktor.http.URLBuilder
+import io.ktor.http.takeFrom
 import kotlinx.coroutines.withContext
-import okhttp3.HttpUrl.Companion.toHttpUrl
 
 /**
  * Word-timed lyrics from BetterLyrics — the backend behind the YouTube Music
@@ -42,14 +43,14 @@ object BetterLyrics {
         artist: String,
         durationMs: Long,
         album: String?,
-    ): List<LyricLine>? = withContext(Dispatchers.IO) {
-        val url = endpoint.toHttpUrl().newBuilder()
-            .addQueryParameter("s", title)
-            .addQueryParameter("a", artist)
+    ): List<LyricLine>? = withContext(AppIoDispatcher) {
+        val url = URLBuilder().takeFrom(endpoint)
             .apply {
+                parameters.append("s", title)
+                parameters.append("a", artist)
                 val seconds = durationMs / 1000
-                if (seconds > 0) addQueryParameter("d", seconds.toString())
-                if (!album.isNullOrBlank()) addQueryParameter("al", album)
+                if (seconds > 0) parameters.append("d", seconds.toString())
+                if (!album.isNullOrBlank()) parameters.append("al", album)
             }
             .build()
 

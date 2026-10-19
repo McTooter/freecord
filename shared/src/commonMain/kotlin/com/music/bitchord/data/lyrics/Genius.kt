@@ -1,7 +1,13 @@
 package com.music.bitchord.data.lyrics
 
-import com.music.bitchord.data.Http
-import kotlinx.coroutines.Dispatchers
+import com.music.bitchord.platform.AppIoDispatcher
+import com.music.bitchord.platform.platformHttpClient
+import io.ktor.client.plugins.HttpTimeout
+import io.ktor.client.request.get
+import io.ktor.client.request.header
+import io.ktor.client.statement.bodyAsText
+import io.ktor.http.encodeURLParameter
+import io.ktor.http.isSuccess
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -10,13 +16,6 @@ import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
-import okhttp3.HttpUrl.Companion.toHttpUrl
-import okhttp3.Request
-import org.jsoup.Jsoup
-import org.jsoup.nodes.TextNode
-import java.net.URLEncoder
-import java.util.Locale
-import java.util.concurrent.TimeUnit
 
 /**
  * Web scraper for Genius.com lyrics.
@@ -27,7 +26,7 @@ import java.util.concurrent.TimeUnit
  * Genius does not offer timestamps, but carries an immense catalogue. The scraper:
  *  1. Searches Genius's open multi-search endpoint (no API key required).
  *  2. Matches the best candidate song and grabs its webpage URL.
- *  3. Fetches the page HTML and extracts lyrics from `data-lyrics-container` tags via Jsoup.
+ *  3. Fetches the page HTML and extracts lyrics from `data-lyrics-container` tags.
  *  4. Cleans out Genius metadata (headers, translation links, "You might also like", "Embed").
  *  5. Retains section headers (e.g. "[Verse 1]", "[Chorus]") for beautiful formatted display.
  */
@@ -55,19 +54,21 @@ object Genius {
     private val json by lazy { Json { ignoreUnknownKeys = true; isLenient = true } }
 
     private val httpClient by lazy {
-        Http.client.newBuilder()
-            .callTimeout(8, TimeUnit.SECONDS)
-            .connectTimeout(4, TimeUnit.SECONDS)
-            .build()
+        platformHttpClient {
+            install(HttpTimeout) {
+                requestTimeoutMillis = 8_000
+                connectTimeoutMillis = 4_000
+            }
+        }
     }
 
-    suspend fun lyrics(title: String, artist: String): List<LyricLine>? = withContext(Dispatchers.IO) {
+    suspend fun lyrics(title: String, artist: String): List<LyricLine>? = withContext(AppIoDispatcher) {
         runCatching {
             scrapeLyrics(title, artist)
         }.getOrNull()
     }
 
-    private fun scrapeLyrics(title: String, artist: String): List<LyricLine>? {
+    private suspend fun scrapeLyrics(title: String, artist: String): List<LyricLine>? {
         val cleanTitle = cleanQuery(title)
         val cleanArtist = cleanQuery(artist)
 
@@ -123,9 +124,14 @@ object Genius {
 
         val distinctAttempts = searchAttempts.distinctBy { it.query }
 
-        val songUrl = distinctAttempts.asSequence()
-            .mapNotNull { attempt -> searchSongUrl(attempt.query, attempt.title, attempt.artist) }
-            .firstOrNull() ?: return null
+        // Asked one after another, as the sequence did it: the first answer
+        // ends the walk.
+        var songUrl: String? = null
+        for (attempt in distinctAttempts) {
+            songUrl = searchSongUrl(attempt.query, attempt.title, attempt.artist)
+            if (songUrl != null) break
+        }
+        if (songUrl == null) return null
 
         val html = fetchHtml(songUrl)
         if (html.isNullOrBlank()) return null
@@ -138,12 +144,12 @@ object Genius {
     /**
      * Searches Genius for the track and returns the song's page URL.
      */
-    internal fun searchSongUrl(cleanTitle: String, cleanArtist: String): String? {
+    internal suspend fun searchSongUrl(cleanTitle: String, cleanArtist: String): String? {
         return searchSongUrl("$cleanArtist $cleanTitle".trim(), cleanTitle, cleanArtist)
     }
 
-    private fun searchSongUrl(query: String, targetTitle: String, targetArtist: String): String? {
-        val url = "https://genius.com/api/search/multi?q=${URLEncoder.encode(query, "UTF-8")}"
+    private suspend fun searchSongUrl(query: String, targetTitle: String, targetArtist: String): String? {
+        val url = "https://genius.com/api/search/multi?q=${query.encodeURLParameter()}"
         val responseBody = httpGet(url) ?: return null
 
         return runCatching {
@@ -169,12 +175,12 @@ object Genius {
         targetArtist: String,
     ): JsonObject? {
         if (candidates.isEmpty()) return null
-        val normTitle = targetTitle.lowercase(Locale.ROOT)
-        val normArtist = targetArtist.lowercase(Locale.ROOT)
+        val normTitle = targetTitle.lowercase()
+        val normArtist = targetArtist.lowercase()
 
         val scored = candidates.mapNotNull { item ->
-            val title = item["title"]?.jsonPrimitive?.contentOrNull?.lowercase(Locale.ROOT) ?: ""
-            val artist = item["artist_names"]?.jsonPrimitive?.contentOrNull?.lowercase(Locale.ROOT) ?: ""
+            val title = item["title"]?.jsonPrimitive?.contentOrNull?.lowercase() ?: ""
+            val artist = item["artist_names"]?.jsonPrimitive?.contentOrNull?.lowercase() ?: ""
             var score = 0
 
             val titleMatches = normTitle.isNotBlank() && (title == normTitle || title.contains(normTitle) || normTitle.contains(title))
@@ -204,8 +210,11 @@ object Genius {
     }
 
     /**
-     * Parses the Genius lyrics HTML page using Jsoup, extracting text while preserving
+     * Parses the Genius lyrics HTML page, extracting text while preserving
      * stanzas and section headers.
+     *
+     * The container walk itself is a platform question: Jsoup on the JVM, a
+     * hand-rolled scanner where Jsoup does not exist. See [extractGeniusContainers].
      */
     fun parseHtml(html: String): List<LyricLine>? {
         return runCatching {
@@ -214,41 +223,8 @@ object Genius {
     }
 
     private fun parseHtmlUnsafe(html: String): List<LyricLine>? {
-        val doc = Jsoup.parse(html)
-
-        // Modern Genius uses data-lyrics-container="true", older pages use div.lyrics
-        var containers = doc.select("div[data-lyrics-container=true]")
-        if (containers.isEmpty()) {
-            containers = doc.select("div.lyrics")
-        }
-        if (containers.isEmpty()) return null
-
-        val fullTextBuilder = StringBuilder()
-
-        for (container in containers) {
-            // Remove headers, contributors, translation links, buttons, ads
-            container.select(
-                "[data-exclude-from-selection=true], " +
-                    ".LyricsHeader__Container, " +
-                    ".SongBioPreview__Container, " +
-                    ".InreadAd__Container, " +
-                    "button, " +
-                    "script, " +
-                    "style",
-            ).remove()
-
-            // Turn <br> into explicit newlines before extracting text
-            container.select("br").forEach { it.replaceWith(TextNode("\n")) }
-            container.select("p").forEach { it.prepend("\n") }
-
-            val text = container.wholeText()
-            if (text.isNotBlank()) {
-                fullTextBuilder.append(text).append("\n")
-            }
-        }
-
-        val rawLyrics = fullTextBuilder.toString()
-        if (rawLyrics.isBlank()) return null
+        val rawLyrics = extractGeniusContainers(html)
+        if (rawLyrics.isNullOrBlank()) return null
 
         val cleaned = stripArtifacts(rawLyrics)
         return textToLyricLines(cleaned).takeIf { it.isNotEmpty() }
@@ -324,19 +300,15 @@ object Genius {
         val artist: String,
     )
 
-    private fun httpGet(url: String): String? = runCatching {
-        val request = Request.Builder()
-            .url(url)
-            .header("User-Agent", USER_AGENT)
-            .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,application/json,*/*;q=0.8")
-            .header("Accept-Language", "en-US,en;q=0.9")
-            .build()
-        httpClient.newCall(request).execute().use { response ->
-            if (response.isSuccessful) response.body?.string() else null
-        }
+    private suspend fun httpGet(url: String): String? = runCatching {
+        httpClient.get(url) {
+            header("User-Agent", USER_AGENT)
+            header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,application/json,*/*;q=0.8")
+            header("Accept-Language", "en-US,en;q=0.9")
+        }.takeIf { it.status.isSuccess() }?.bodyAsText()
     }.getOrNull()
 
-    private fun fetchHtml(url: String): String? = httpGet(url)
+    private suspend fun fetchHtml(url: String): String? = httpGet(url)
 
     private val TITLE_SEPARATOR by lazy { Regex("""\s*[-–—:]\s*""") }
     private val DECORATIVE_CHARS by lazy { Regex("""[♪♫★☆【】《》「」~_]""") }
@@ -355,3 +327,12 @@ object Genius {
     private val YOU_MIGHT_ALSO_LIKE by lazy { Regex("""\d*You might also like""", RegexOption.IGNORE_CASE) }
     private val TRAILING_EMBED by lazy { Regex("""\d*Embed\s*$""", RegexOption.IGNORE_CASE) }
 }
+
+/**
+ * The lyrics containers of a Genius page, as plain text: the
+ * `data-lyrics-container` divs, or `div.lyrics` on the older shape, with
+ * headers, contributors, translation links, buttons, ads and scripts out of
+ * the way and the page's own line breaks standing. Null when the page has
+ * neither kind of container.
+ */
+internal expect fun extractGeniusContainers(html: String): String?
