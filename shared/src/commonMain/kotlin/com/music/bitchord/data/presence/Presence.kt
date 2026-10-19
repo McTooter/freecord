@@ -1,24 +1,30 @@
 package com.music.bitchord.data.presence
 
 import com.music.bitchord.data.DebugLog
-import com.music.bitchord.data.Http
+import com.music.bitchord.platform.AppIoDispatcher
+import com.music.bitchord.platform.platformHttpClient
+import io.ktor.client.request.post
+import io.ktor.client.request.setBody
+import io.ktor.client.statement.bodyAsText
+import io.ktor.http.ContentType
+import io.ktor.http.contentType
+import io.ktor.http.isSuccess
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
-import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.Request
-import okhttp3.RequestBody.Companion.toRequestBody
-import java.util.concurrent.TimeUnit
+import kotlin.concurrent.Volatile
 import kotlin.random.Random
 
 enum class PresencePlatform(val wire: String) { Android("android"), Pc("pc") }
@@ -41,12 +47,13 @@ class Presence(
     private val installId: String,
     private val endpoint: String = ENDPOINT,
 ) {
+    private val client = platformHttpClient {}
     private val open = MutableStateFlow(false)
     @Volatile private var announced = false
     @Volatile private var intervalSec = DEFAULT_INTERVAL_SEC
 
     init {
-        CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
+        CoroutineScope(SupervisorJob() + AppIoDispatcher).launch {
             // collectLatest: a change of state cancels whatever the last one was
             // still doing, so a close cancels the ping loop and a quick reopen
             // cancels a pending close.
@@ -75,7 +82,7 @@ class Presence(
      */
     fun closeBlocking() {
         open.value = false
-        if (announced) send(open = false, timeoutSec = 2)
+        if (announced) runBlocking { send(open = false, timeoutSec = 2) }
     }
 
     private fun nextDelayMs(): Long {
@@ -84,30 +91,41 @@ class Presence(
         return base + Random.nextLong(-base / 10, base / 10 + 1)
     }
 
-    private fun send(open: Boolean, timeoutSec: Long = 15) {
+    private suspend fun send(open: Boolean, timeoutSec: Long = 15) {
         val body = buildJsonObject {
             put("id", installId)
             put("platform", platform.wire)
             put("open", open)
-        }.toString().toRequestBody(JSON)
-        val request = Request.Builder().url(endpoint).post(body).build()
+        }.toString()
         // Set before sending: a ping that times out may still have been counted,
         // so it still needs a close.
         if (open) announced = true
         try {
-            val call = Http.client.newCall(request)
-            call.timeout().timeout(timeoutSec, TimeUnit.SECONDS)
-            call.execute().use { response ->
-                if (!open) announced = false
-                if (!response.isSuccessful) {
-                    DebugLog.w(TAG, "presence ping refused: HTTP ${response.code}")
-                    return
+            val response = withTimeoutOrNull(timeoutSec * 1000) {
+                client.post(endpoint) {
+                    contentType(ContentType.Application.Json)
+                    setBody(body)
                 }
-                val text = response.body?.string().orEmpty()
-                runCatching { Json.parseToJsonElement(text).jsonObject["intervalSec"]?.jsonPrimitive?.intOrNull }
-                    .getOrNull()
-                    ?.let { intervalSec = it }
             }
+            if (response == null) {
+                // OkHttp's call timeout, as a deadline around the request: the
+                // next ping is soon enough and announced stays set, exactly as
+                // a timed-out call left it.
+                DebugLog.d(TAG, "presence ping timed out")
+                return
+            }
+            if (!open) announced = false
+            if (!response.status.isSuccess()) {
+                DebugLog.w(TAG, "presence ping refused: HTTP ${response.status.value}")
+                return
+            }
+            val text = response.bodyAsText()
+            runCatching { Json.parseToJsonElement(text).jsonObject["intervalSec"]?.jsonPrimitive?.intOrNull }
+                .getOrNull()
+                ?.let { intervalSec = it }
+        } catch (e: CancellationException) {
+            // The loop is being torn down — not a failed ping.
+            throw e
         } catch (e: Exception) {
             // Offline, or the server is down. The next ping is soon enough.
             DebugLog.d(TAG, "presence ping failed: ${e.message}")
@@ -121,6 +139,5 @@ class Presence(
         private const val MIN_INTERVAL_SEC = 60
         private const val MAX_INTERVAL_SEC = 3600
         private const val CLOSE_DEBOUNCE_MS = 2_000L
-        private val JSON = "application/json".toMediaType()
     }
 }

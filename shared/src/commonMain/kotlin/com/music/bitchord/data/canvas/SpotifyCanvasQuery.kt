@@ -1,5 +1,8 @@
 package com.music.bitchord.data.canvas
 
+import com.music.bitchord.platform.AppLock
+import com.music.bitchord.platform.platformWallClockMillis
+import com.music.bitchord.platform.withLock
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonNull
@@ -9,6 +12,7 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonObject
+import kotlin.concurrent.Volatile
 
 /**
  * How Spotify's web player asks for a track's Canvas today: the `canvas` GraphQL query on
@@ -116,14 +120,15 @@ object SpotifyCanvasQuery {
      */
     class QueryHashes(
         private val fetch: (String) -> String?,
-        private val now: () -> Long = System::currentTimeMillis,
+        private val now: () -> Long = ::platformWallClockMillis,
         private val maxScripts: Int = 8,
     ) {
+        private val lock = AppLock()
+
         @Volatile private var hash: String? = null
         @Volatile private var checkedAt = 0L
 
-        @Synchronized
-        fun canvasHash(forceRefresh: Boolean = false): String {
+        fun canvasHash(forceRefresh: Boolean = false): String = lock.withLock {
             val current = hash
             val age = now() - checkedAt
             if (!forceRefresh && checkedAt != 0L && age < (if (current != null) FOUND_TTL_MS else MISSED_TTL_MS)) {
