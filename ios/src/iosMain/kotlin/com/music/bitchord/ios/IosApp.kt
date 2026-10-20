@@ -63,6 +63,7 @@ import com.music.bitchord.data.model.UiState
 import com.music.bitchord.ui.player.NowPlayingScreen
 import com.music.bitchord.ui.screens.HomeScreen
 import com.music.bitchord.ui.utils.guardSheetFromContentTouches
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 
 /**
@@ -81,6 +82,11 @@ internal fun IosApp() {
     // The shell's own theme, until the phone's palette has a common home to
     // be reached from. The surfaces below are all Material and read these.
     MaterialTheme(colorScheme = darkColorScheme()) {
+        // Reaching this effect at all means the first frame composed — the
+        // line the launch journal is missing when a crash predates it.
+        LaunchedEffect(Unit) {
+            CrashJournal.mark("stage first-frame")
+        }
         val playback = IosPlayback
         val song by playback.song.collectAsState()
         val queue by playback.queue.collectAsState()
@@ -100,10 +106,21 @@ internal fun IosApp() {
         var homeRefreshing by remember { mutableStateOf(false) }
         LaunchedEffect(homeRefreshes) {
             homeState = UiState.Loading
-            homeState = YtMusicRepository.home().fold(
-                { UiState.Success(it.shelves) },
-                { UiState.Error(it.message ?: "Couldn't load Home") },
-            )
+            // A feed that cannot be fetched is an error state; a repository
+            // that cannot even be constructed would otherwise take the
+            // process down from inside this coroutine, where no frame's
+            // guard can see it. Cancellation is left alone — it is the
+            // effect's own teardown, not a failure.
+            try {
+                homeState = YtMusicRepository.home().fold(
+                    { UiState.Success(it.shelves) },
+                    { UiState.Error(it.message ?: "Couldn't load Home") },
+                )
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                homeState = UiState.Error(e.message ?: "Couldn't load Home")
+            }
             homeRefreshing = false
         }
 
