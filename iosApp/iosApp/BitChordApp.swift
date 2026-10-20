@@ -19,10 +19,10 @@ struct BitChordApp: App {
     }
 }
 
-private struct ContentView: UIViewRepresentable {
-    func makeUIView(context: Context) -> UIViewController {
+private struct ContentView: UIViewControllerRepresentable {
+    func makeUIViewController(context: Context) -> UIViewController {
         MainViewControllerKt.MainViewController()
     }
 
-    func updateUIView(_ uiView: UIViewController, context: Context) {}
+    func updateUIViewController(_ uiViewController: UIViewController, context: Context) {}
 }
